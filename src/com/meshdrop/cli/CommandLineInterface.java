@@ -30,8 +30,11 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Interactive command-line interface for controlling a MeshDrop node.
@@ -53,6 +56,7 @@ public class CommandLineInterface implements MessageListener {
 
     private record PendingApproval(FileMetadata metadata, Peer sender, CompletableFuture<Boolean> future) {}
     private final java.util.Queue<PendingApproval> pendingApprovals = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private volatile boolean autoAccept = true;
 
     @FunctionalInterface
     public interface CommandHandler {
@@ -90,6 +94,7 @@ public class CommandLineInterface implements MessageListener {
         commands.put("discover", this::cmdDiscover);
         commands.put("send", this::cmdSend);
         commands.put("sendfile", this::cmdSendFile);
+        commands.put("autoaccept", this::cmdAutoAccept);
         commands.put("transfers", this::cmdTransfers);
         commands.put("resume", this::cmdResume);
         commands.put("cancel", this::cmdCancel);
@@ -196,11 +201,13 @@ public class CommandLineInterface implements MessageListener {
         sb.append("------------------------------------------------\n");
         sb.append(String.format("%-24s%s%n", "peers", "List discovered peers"));
         sb.append(String.format("%-24s%s%n", "connections", "Show TCP connections"));
+        sb.append(String.format("%-24s%s%n", "connect <host> [port]", "Connect to a peer directly"));
         sb.append(String.format("%-24s%s%n", "status", "Show node status"));
         sb.append(String.format("%-24s%s%n", "info", "Show local identity"));
         sb.append(String.format("%-24s%s%n", "discover", "Run peer discovery"));
         sb.append(String.format("%-24s%s%n", "send <peer> <message>", "Send a message"));
         sb.append(String.format("%-24s%s%n", "sendfile <peer> <path>", "Send a file"));
+        sb.append(String.format("%-24s%s%n", "autoaccept [on|off]", "Toggle auto-accept for incoming files"));
         sb.append(String.format("%-24s%s%n", "transfers", "Show transfers"));
         sb.append(String.format("%-24s%s%n", "resume <transferId>", "Resume transfer"));
         sb.append(String.format("%-24s%s%n", "cancel <transferId>", "Cancel transfer"));
@@ -453,17 +460,41 @@ public class CommandLineInterface implements MessageListener {
     }
 
     private CompletableFuture<Boolean> handleTransferApproval(FileMetadata metadata, Peer sender) {
+        String senderName = sender != null ? sender.getDisplayName() : "peer";
+        if (autoAccept) {
+            println("");
+            println("[FILE] Auto-accepting incoming file '" + metadata.fileName() + "' (" +
+                    formatFileSize(metadata.fileSize()) + ") from " + senderName);
+            printPrompt();
+            return CompletableFuture.completedFuture(true);
+        }
+
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         pendingApprovals.add(new PendingApproval(metadata, sender, future));
-        String senderName = sender != null ? sender.getDisplayName() : "peer";
         println("");
         println("[FILE] Incoming file offer:");
         println("  From: " + senderName);
         println("  File: " + metadata.fileName());
         println("  Size: " + formatFileSize(metadata.fileSize()));
-        println("Accept? [y/N]");
+        println("Accept? [y/N] (or type 'autoaccept on' to accept automatically)");
         printPrompt();
         return future;
+    }
+
+    private CommandResult cmdAutoAccept(Command cmd) {
+        if (cmd.argCount() > 0) {
+            String arg = cmd.arg(0).toLowerCase();
+            if (arg.equals("on") || arg.equals("true") || arg.equals("enable") || arg.equals("yes")) {
+                autoAccept = true;
+                return CommandResult.ok("Auto-accept is now ENABLED. Incoming file offers will be accepted automatically.");
+            } else if (arg.equals("off") || arg.equals("false") || arg.equals("disable") || arg.equals("no")) {
+                autoAccept = false;
+                return CommandResult.ok("Auto-accept is now DISABLED. You will be prompted before accepting files.");
+            } else {
+                return CommandResult.error("Usage: autoaccept [on|off]");
+            }
+        }
+        return CommandResult.ok("Auto-accept is currently " + (autoAccept ? "ENABLED" : "DISABLED") + ".\nType 'autoaccept on' or 'autoaccept off' to change.");
     }
 
     private CommandResult cmdSendFile(Command cmd) {
@@ -509,20 +540,93 @@ public class CommandLineInterface implements MessageListener {
             println("\nWaiting for " + peer.getDisplayName() + " to accept...");
 
             CompletableFuture<Transfer> future = node.sendFile(peer.getNodeId(), path);
-            Transfer transfer = future.get(ProtocolConstants.DEFAULT_FILE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
-            // Render final transfer status
+            // Phase 1: Wait for acceptance (up to offer timeout of 30 seconds)
+            long offerStart = System.currentTimeMillis();
+            Transfer transfer = null;
+            while (!future.isDone() && transfer == null) {
+                var active = node.getFileTransferService().getTransferManager().getActiveTransfers();
+                for (Transfer t : active) {
+                    if (t.getDirection() == TransferDirection.UPLOAD && path.equals(t.getLocalPath())) {
+                        transfer = t;
+                        break;
+                    }
+                }
+                if (transfer != null && transfer.getState() != TransferState.WAITING_FOR_ACCEPT) {
+                    break;
+                }
+                if (System.currentTimeMillis() - offerStart > ProtocolConstants.DEFAULT_FILE_OFFER_TIMEOUT_MS) {
+                    if (transfer != null) {
+                        node.getFileTransferService().cancelTransfer(transfer.getTransferId());
+                    }
+                    return CommandResult.error("Transfer offer timed out: " + peer.getDisplayName() +
+                            " did not accept within 30 seconds.\n(Tip: On " + peer.getDisplayName() +
+                            ", type 'y' to accept incoming files, or type 'autoaccept on' to accept automatically)");
+                }
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return CommandResult.error("Transfer interrupted");
+                }
+            }
+
+            println("[TRANSFER] Accepted by " + peer.getDisplayName() + ". Streaming data...");
+
+            // Phase 2: Stream data with live progress bar (no arbitrary 30s timeout on data transfer!)
+            long lastBytes = 0;
+            long lastActivityTime = System.currentTimeMillis();
+            while (!future.isDone()) {
+                if (transfer != null) {
+                    long currentBytes = transfer.getBytesTransferred();
+                    double pct = transfer.getProgressPercentage();
+                    double speedMB = transfer.getTransferSpeedBps() / (1024.0 * 1024.0);
+
+                    if (currentBytes > lastBytes) {
+                        lastBytes = currentBytes;
+                        lastActivityTime = System.currentTimeMillis();
+                    } else if (System.currentTimeMillis() - lastActivityTime > 60_000) {
+                        node.getFileTransferService().cancelTransfer(transfer.getTransferId());
+                        return CommandResult.error("Transfer timed out: no network activity for 60 seconds.");
+                    }
+
+                    print("\r" + renderProgressBar(pct) + String.format(" %5.1f%% (%s / %s)  %.1f MB/s   ",
+                            pct, formatFileSize(currentBytes), formatFileSize(size), speedMB));
+                }
+
+                try {
+                    transfer = future.get(300, TimeUnit.MILLISECONDS);
+                    break;
+                } catch (TimeoutException ignored) {
+                    // Continue progress loop
+                }
+            }
+
+            if (transfer == null && future.isDone()) {
+                transfer = future.get();
+            }
+
+            // Print completed 100% status
+            print("\r" + renderProgressBar(100.0) + String.format(" 100.0%% (%s / %s)  DONE          \n",
+                    formatFileSize(size), formatFileSize(size)));
+
             StringBuilder sb = new StringBuilder();
-            sb.append("\n[TRANSFER] Accepted by ").append(peer.getDisplayName()).append("\n");
-            sb.append(renderProgressBar(100.0)).append(" 100%\n");
-            sb.append(formatFileSize(size)).append(" / ").append(formatFileSize(size)).append("\n");
-            sb.append("[TRANSFER] Integrity verified\n");
-            sb.append("[TRANSFER] Completed\n");
-            sb.append("ID: ").append(transfer.getTransferId());
-            return CommandResult.ok(sb.toString());
+            sb.append("\n[TRANSFER] Completed successfully!\n");
+            sb.append("[TRANSFER] File: ").append(path.getFileName()).append("\n");
+            sb.append("[TRANSFER] Size: ").append(formatFileSize(size)).append("\n");
+            sb.append("[TRANSFER] Recipient: ").append(peer.getDisplayName()).append("\n");
+            sb.append("[TRANSFER] SHA-256 verified: ").append(sha256).append("\n");
+            if (transfer != null) {
+                sb.append("ID: ").append(transfer.getTransferId());
+            }
+            return CommandResult.ok(sb.toString().trim());
 
         } catch (Exception e) {
-            String msg = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            String msg = cause.getMessage();
+            if (msg == null || msg.isBlank()) {
+                msg = cause.getClass().getSimpleName();
+            }
             return CommandResult.error("Transfer failed: " + msg);
         }
     }
@@ -757,6 +861,15 @@ public class CommandLineInterface implements MessageListener {
             output.flush();
         } else {
             Logger.consolePrint(PROMPT);
+        }
+    }
+
+    private void print(String message) {
+        if (output != null) {
+            output.print(message);
+            output.flush();
+        } else {
+            Logger.consolePrint(message);
         }
     }
 

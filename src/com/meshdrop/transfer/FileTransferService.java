@@ -152,16 +152,18 @@ public class FileTransferService {
 
             Logger.info("[TRANSFER] Sent FILE_OFFER for " + fileName + " (" + fileSize + " bytes) to " + peer.getDisplayName());
 
-            // Schedule offer timeout
+            // Schedule offer timeout (only triggers if peer never accepted/rejected within offerTimeoutMs)
             Thread.ofVirtual().name("offer-timeout-" + metadata.transferId()).start(() -> {
                 try {
                     Thread.sleep(offerTimeoutMs);
-                    CompletableFuture<Transfer> pending = pendingOfferFutures.remove(metadata.transferId());
-                    if (pending != null && !pending.isDone()) {
-                        transfer.transitionTo(TransferState.FAILED);
-                        transfer.setErrorMessage("Offer timed out after " + offerTimeoutMs + "ms");
-                        pending.completeExceptionally(new IOException("Offer timed out waiting for peer acceptance"));
-                        notifyFailed(transfer, "Offer timed out");
+                    if (transfer.getState() == TransferState.WAITING_FOR_ACCEPT) {
+                        CompletableFuture<Transfer> pending = pendingOfferFutures.remove(metadata.transferId());
+                        if (pending != null && !pending.isDone()) {
+                            transfer.transitionTo(TransferState.FAILED);
+                            transfer.setErrorMessage("Offer timed out after " + offerTimeoutMs + "ms");
+                            pending.completeExceptionally(new IOException("Offer timed out waiting for peer acceptance"));
+                            notifyFailed(transfer, "Offer timed out");
+                        }
                     }
                 } catch (InterruptedException ignored) {}
             });
