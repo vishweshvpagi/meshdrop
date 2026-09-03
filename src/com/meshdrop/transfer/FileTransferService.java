@@ -234,6 +234,11 @@ public class FileTransferService {
     public void cancelTransfer(UUID transferId) {
         if (transferId == null) return;
 
+        Transfer transfer = transferManager.getTransfer(transferId).orElse(null);
+        if (transfer != null) {
+            transfer.cancel("Transfer cancelled by user");
+        }
+
         FileReceiver receiver = activeReceivers.remove(transferId);
         if (receiver != null) {
             receiver.abort("Transfer cancelled by user");
@@ -255,11 +260,10 @@ public class FileTransferService {
         CompletableFuture<Transfer> resumeFuture = pendingResumeFutures.remove(transferId);
         if (resumeFuture != null) resumeFuture.completeExceptionally(new IOException("Transfer cancelled"));
 
-        Transfer transfer = transferManager.getTransfer(transferId).orElse(null);
         if (transfer != null) {
             notifyCancelled(transfer);
         }
-        Logger.info("[TRANSFER] Cancelled transfer " + transferId);
+        Logger.info("[TRANSFER] Cancelled transfer " + (transfer != null ? transfer.getShortId() : transferId));
     }
 
     // ========================================================================
@@ -314,6 +318,31 @@ public class FileTransferService {
         // 3. Prevent duplicate active transfer
         if (transferManager.getTransfer(metadata.transferId()).isPresent()) {
             sendReject(connection, metadata.transferId(), "TRANSFER_ALREADY_EXISTS");
+            return;
+        }
+
+        // 4. DoS check: Max concurrent transfers
+        if (transferManager.getActiveTransfers().size() >= ProtocolConstants.MAX_CONCURRENT_TRANSFERS) {
+            Logger.warn("[TRANSFER] Rejecting offer: max concurrent transfers limit reached (" +
+                    ProtocolConstants.MAX_CONCURRENT_TRANSFERS + ")");
+            sendReject(connection, metadata.transferId(), "TOO_MANY_TRANSFERS");
+            return;
+        }
+
+        // 5. Bounds check: Max file size limit
+        if (metadata.fileSize() > ProtocolConstants.MAX_ACCEPTED_FILE_SIZE) {
+            Logger.warn("[TRANSFER] Rejecting offer: file size (" + metadata.fileSize() +
+                    " bytes) exceeds maximum allowable limit (" + ProtocolConstants.MAX_ACCEPTED_FILE_SIZE + " bytes)");
+            sendReject(connection, metadata.transferId(), "FILE_TOO_LARGE");
+            return;
+        }
+
+        // 6. Disk space pre-check
+        long freeSpace = downloadsDir.toFile().getUsableSpace();
+        if (freeSpace > 0 && freeSpace < metadata.fileSize() + ProtocolConstants.DISK_SAFETY_BUFFER_BYTES) {
+            Logger.warn("[TRANSFER] Rejecting offer: insufficient disk space. Required: " +
+                    (metadata.fileSize() + ProtocolConstants.DISK_SAFETY_BUFFER_BYTES) + " bytes, available: " + freeSpace);
+            sendReject(connection, metadata.transferId(), "INSUFFICIENT_STORAGE");
             return;
         }
 
@@ -475,10 +504,19 @@ public class FileTransferService {
         try {
             var error = packet.decodeFileError();
             Transfer transfer = transferManager.getTransfer(error.transferId()).orElse(null);
+            boolean isCancellation = error.message() != null && error.message().toLowerCase().contains("cancel");
+
             if (transfer != null && !transfer.getState().isTerminal()) {
                 transfer.setErrorMessage(error.message());
-                transfer.transitionTo(TransferState.FAILED);
-                notifyFailed(transfer, error.message());
+                if (isCancellation) {
+                    if (transfer.getState().canTransitionTo(TransferState.CANCELLED)) {
+                        transfer.transitionTo(TransferState.CANCELLED);
+                    }
+                    notifyCancelled(transfer);
+                } else {
+                    transfer.transitionTo(TransferState.FAILED);
+                    notifyFailed(transfer, error.message());
+                }
             }
             FileReceiver receiver = activeReceivers.remove(error.transferId());
             if (receiver != null) {
@@ -486,11 +524,11 @@ public class FileTransferService {
             }
             CompletableFuture<Transfer> future = pendingOfferFutures.remove(error.transferId());
             if (future != null) {
-                future.completeExceptionally(new IOException("Transfer error: " + error.message()));
+                future.completeExceptionally(new IOException(error.message()));
             }
             CompletableFuture<Transfer> resumeFuture = pendingResumeFutures.remove(error.transferId());
             if (resumeFuture != null) {
-                resumeFuture.completeExceptionally(new IOException("Transfer error: " + error.message()));
+                resumeFuture.completeExceptionally(new IOException(error.message()));
             }
         } catch (ProtocolException ignored) {}
     }

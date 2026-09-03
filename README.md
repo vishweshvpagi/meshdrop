@@ -4,7 +4,7 @@
 
 [![Java 26](https://img.shields.io/badge/Java-26-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-success)](https://github.com/)
-[![Tests](https://img.shields.io/badge/Test%20Suites-75%2F75%20Passed-brightgreen)](scripts/test.ps1)
+[![Tests](https://img.shields.io/badge/Test%20Suites-76%2F76%20Passed-brightgreen)](scripts/test.ps1)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20PowerShell-blue)](https://microsoft.com/)
 
 ---
@@ -190,14 +190,16 @@ meshdrop> status
 | `status` | None | Displays node state, uptime, connection counts, and transfer stats |
 | `info` | None | Displays local node UUID, display name, public key fingerprint, and paths |
 | `peers` | None | Tabular list of discovered and connected peers with trust states |
+| `connect` | `<host> [port]` | Connects directly to a remote peer via IP address (default port 5000) |
 | `connections`| None | Detailed view of active TCP connections, directions, and idle durations |
 | `discover` | None | Triggers an immediate UDP multicast peer discovery broadcast |
 | `ping` | `<peer>` | Sends a latency probe to a remote peer and displays round-trip time |
 | `send` | `<peer> <msg>` | Sends an acknowledged text message to a peer |
-| `sendfile` | `<peer> <path>`| Sends a file to a remote peer with real-time transfer progress |
-| `transfers` | None | Displays active, resumable, and completed file transfers |
-| `resume` | `<transferId>` | Resumes an interrupted file transfer from last verified chunk |
-| `cancel` | `<transferId>` | Cancels an active or pending file transfer |
+| `sendfile` | `<peer> <path>`| Streams file with live progress, speed, ETA, and SHA-256 verification |
+| `autoaccept`| `[on\|off]` | Enables or disables automatic acceptance of incoming file transfers |
+| `transfers` | None | Formatted table of transfers with `TX-XXXXXX` IDs, speed, and state |
+| `resume` | `<id>` | Resumes an interrupted transfer by short ID (e.g. `TX-8F32A1`) or UUID |
+| `cancel` | `<id>` | Cancels an in-progress transfer by short ID or UUID with resource cleanup |
 | `trust` | `<peer>` | Explicitly trusts a peer's identity and pins their fingerprint |
 | `untrust` | `<peer>` | Sets a peer back to default UNTRUSTED status |
 | `block` | `<peer>` | Blacklists a peer and severs all active connections |
@@ -208,7 +210,7 @@ meshdrop> status
 
 ## 9. Test Suite Summary
 
-MeshDrop includes a standalone, zero-dependency test runner executing **75 distinct test suites** covering all layers of the architecture:
+MeshDrop includes a standalone, zero-dependency test runner executing **76 distinct test suites** covering all layers of the architecture:
 
 ```text
 =========================================

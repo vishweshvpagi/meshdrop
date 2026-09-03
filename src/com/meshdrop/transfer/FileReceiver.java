@@ -170,6 +170,10 @@ public class FileReceiver implements AutoCloseable {
         return expectedChunkIndex;
     }
 
+    public Path getTempFilePath() {
+        return tempFilePath;
+    }
+
     /**
      * Appends a chunk to the temporary file while updating SHA-256 digest, checkpoint, and progress.
      */
@@ -377,7 +381,11 @@ public class FileReceiver implements AutoCloseable {
                 transfer.transitionTo(TransferState.FAILED);
             }
             if (listener != null) {
-                listener.onTransferFailed(transfer, reason);
+                if (transfer.getState() == TransferState.CANCELLED) {
+                    listener.onTransferCancelled(transfer);
+                } else {
+                    listener.onTransferFailed(transfer, reason);
+                }
             }
         }
     }

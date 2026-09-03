@@ -1,7 +1,10 @@
 package com.meshdrop.transfer;
 
+import com.meshdrop.protocol.ProtocolConstants;
+
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -9,10 +12,12 @@ import java.util.regex.Pattern;
  * Domain model representing metadata for an offered or active file transfer.
  *
  * Enforces strict security validation:
- *   - Path traversal prevention (no separators, no '..', strictly basename).
+ *   - Path traversal prevention (no separators, no '..', strictly safe basename).
+ *   - Windows reserved device name protection (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+ *   - Forbidden character stripping (< > : " / \ | ? * and ASCII control characters).
  *   - Maximum filename length (255 characters).
- *   - Non-negative file sizes.
- *   - 64-character SHA-256 hex string validation.
+ *   - Bounds validation on file sizes (0 to 100 GiB).
+ *   - Cryptographic 64-character SHA-256 hex string validation.
  */
 public record FileMetadata(
         UUID transferId,
@@ -25,6 +30,12 @@ public record FileMetadata(
 ) {
 
     private static final Pattern SHA256_HEX_PATTERN = Pattern.compile("^[a-fA-F0-9]{64}$");
+
+    private static final Set<String> WINDOWS_RESERVED_NAMES = Set.of(
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+    );
 
     public FileMetadata {
         Objects.requireNonNull(transferId, "transferId must not be null");
@@ -55,6 +66,11 @@ public record FileMetadata(
             throw new IllegalArgumentException("fileSize must not be negative: " + fileSize);
         }
 
+        if (fileSize > ProtocolConstants.MAX_ACCEPTED_FILE_SIZE) {
+            throw new IllegalArgumentException("fileSize exceeds maximum allowable limit of " +
+                    ProtocolConstants.MAX_ACCEPTED_FILE_SIZE + " bytes: " + fileSize);
+        }
+
         if (createdAt <= 0) {
             throw new IllegalArgumentException("createdAt must be a positive timestamp: " + createdAt);
         }
@@ -74,22 +90,78 @@ public record FileMetadata(
 
     /**
      * Sanitizes a file path or raw name to extract only its safe base filename.
+     *
+     * Protections:
+     *   - Path traversal components ('..', '/', '\', drive letters) stripped.
+     *   - Windows reserved device names (CON, NUL, AUX, PRN, COM1-9, LPT1-9) prefixed with 'safe_'.
+     *   - Prohibited filesystem characters (< > : " | ? *) replaced with '_'.
+     *   - ASCII control characters (0x00 to 0x1F) stripped.
+     *   - Trailing dots and spaces trimmed.
+     *   - Length capped at 255 characters.
      */
     public static String sanitizeFileName(String rawName) {
         if (rawName == null || rawName.isBlank()) {
             throw new IllegalArgumentException("Raw file name must not be empty");
         }
-        Path path = Path.of(rawName.trim());
-        Path fileNamePath = path.getFileName();
-        if (fileNamePath == null) {
-            throw new IllegalArgumentException("Cannot determine filename from: " + rawName);
+
+        String name = rawName.trim();
+
+        // 1. If it contains path separators, extract only the last segment
+        int lastSlash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (lastSlash >= 0 && lastSlash < name.length() - 1) {
+            name = name.substring(lastSlash + 1);
         }
-        String name = fileNamePath.toString();
-        // Strip any residual separator or path traversal chars
+
+        // 2. Remove drive letters if present (e.g. C:filename)
+        int colon = name.lastIndexOf(':');
+        if (colon >= 0 && colon < name.length() - 1) {
+            name = name.substring(colon + 1);
+        }
+
+        // 3. Remove any residual traversal markers and separators
         name = name.replace("..", "").replace("/", "").replace("\\", "").replace(":", "");
-        if (name.isBlank()) {
-            throw new IllegalArgumentException("Sanitized filename is empty for: " + rawName);
+
+        // 4. Replace illegal filesystem characters with underscores
+        StringBuilder clean = new StringBuilder();
+        for (char c : name.toCharArray()) {
+            if (c < 32 || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') {
+                clean.append('_');
+            } else {
+                clean.append(c);
+            }
         }
+        name = clean.toString();
+
+        // 5. Trim trailing dots and spaces (problematic on Windows filesystems)
+        while (name.endsWith(".") || name.endsWith(" ")) {
+            name = name.substring(0, name.length() - 1);
+        }
+
+        if (name.isBlank()) {
+            name = "downloaded_file";
+        }
+
+        // 6. Check for Windows reserved device names (e.g. CON, NUL, AUX, CON.txt)
+        String baseName = name;
+        int dot = name.indexOf('.');
+        if (dot >= 0) {
+            baseName = name.substring(0, dot);
+        }
+        if (WINDOWS_RESERVED_NAMES.contains(baseName.toUpperCase())) {
+            name = "safe_" + name;
+        }
+
+        // 7. Enforce maximum filename length of 255 characters
+        if (name.length() > 255) {
+            int extDot = name.lastIndexOf('.');
+            if (extDot > 0 && name.length() - extDot < 20) {
+                String ext = name.substring(extDot);
+                name = name.substring(0, 255 - ext.length()) + ext;
+            } else {
+                name = name.substring(0, 255);
+            }
+        }
+
         return name;
     }
 }

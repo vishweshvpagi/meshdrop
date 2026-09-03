@@ -581,21 +581,25 @@ public class CommandLineInterface implements MessageListener {
                     long currentBytes = transfer.getBytesTransferred();
                     double pct = transfer.getProgressPercentage();
                     double speedMB = transfer.getTransferSpeedBps() / (1024.0 * 1024.0);
+                    long elapsedSec = transfer.getElapsedDurationMs() / 1000;
+                    long etaSec = transfer.getEstimatedRemainingSeconds();
+                    String etaStr = etaSec >= 0 ? formatDurationSeconds(etaSec) : "--:--";
 
                     if (currentBytes > lastBytes) {
                         lastBytes = currentBytes;
                         lastActivityTime = System.currentTimeMillis();
-                    } else if (System.currentTimeMillis() - lastActivityTime > 60_000) {
+                    } else if (System.currentTimeMillis() - lastActivityTime > ProtocolConstants.DEFAULT_FILE_TRANSFER_IDLE_TIMEOUT_MS) {
                         node.getFileTransferService().cancelTransfer(transfer.getTransferId());
-                        return CommandResult.error("Transfer timed out: no network activity for 60 seconds.");
+                        return CommandResult.error("Transfer timed out: no network activity for " +
+                                (ProtocolConstants.DEFAULT_FILE_TRANSFER_IDLE_TIMEOUT_MS / 1000) + " seconds.");
                     }
 
-                    print("\r" + renderProgressBar(pct) + String.format(" %5.1f%% (%s / %s)  %.1f MB/s   ",
-                            pct, formatFileSize(currentBytes), formatFileSize(size), speedMB));
+                    print("\r" + renderProgressBar(pct) + String.format(" %5.1f%% | %s / %s | %5.1f MB/s | ETA: %s | %s   ",
+                            pct, formatFileSize(currentBytes), formatFileSize(size), speedMB, etaStr, transfer.getShortId()));
                 }
 
                 try {
-                    transfer = future.get(300, TimeUnit.MILLISECONDS);
+                    transfer = future.get(250, TimeUnit.MILLISECONDS);
                     break;
                 } catch (TimeoutException ignored) {
                     // Continue progress loop
@@ -607,19 +611,20 @@ public class CommandLineInterface implements MessageListener {
             }
 
             // Print completed 100% status
-            print("\r" + renderProgressBar(100.0) + String.format(" 100.0%% (%s / %s)  DONE          \n",
-                    formatFileSize(size), formatFileSize(size)));
+            long totalElapsedSec = transfer != null ? transfer.getElapsedDurationMs() / 1000 : 0;
+            print("\r" + renderProgressBar(100.0) + String.format(" 100.0%% | %s / %s | Elapsed: %s | DONE          \n",
+                    formatFileSize(size), formatFileSize(size), formatDurationSeconds(totalElapsedSec)));
 
             StringBuilder sb = new StringBuilder();
-            sb.append("\n[TRANSFER] Completed successfully!\n");
-            sb.append("[TRANSFER] File: ").append(path.getFileName()).append("\n");
-            sb.append("[TRANSFER] Size: ").append(formatFileSize(size)).append("\n");
-            sb.append("[TRANSFER] Recipient: ").append(peer.getDisplayName()).append("\n");
-            sb.append("[TRANSFER] SHA-256 verified: ").append(sha256).append("\n");
-            if (transfer != null) {
-                sb.append("ID: ").append(transfer.getTransferId());
-            }
-            return CommandResult.ok(sb.toString().trim());
+            sb.append("\n[TRANSFER COMPLETED]\n");
+            sb.append("  ID:        ").append(transfer != null ? transfer.getShortId() + " (" + transfer.getTransferId() + ")" : "N/A").append("\n");
+            sb.append("  File:      ").append(path.getFileName()).append("\n");
+            sb.append("  Size:      ").append(formatFileSize(size)).append("\n");
+            sb.append("  Peer:      ").append(peer.getDisplayName()).append("\n");
+            sb.append("  Elapsed:   ").append(formatDurationSeconds(totalElapsedSec)).append("\n");
+            sb.append("  SHA-256:   ").append(sha256).append(" (VERIFIED)\n");
+            sb.append("  Status:    COMPLETED");
+            return CommandResult.ok(sb.toString());
 
         } catch (Exception e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -644,9 +649,9 @@ public class CommandLineInterface implements MessageListener {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%-36s | %-16s | %-12s | %-8s | %-10s | %-8s | %-12s | %-10s%n",
+        sb.append(String.format("%-10s | %-16s | %-12s | %-8s | %-10s | %-8s | %-12s | %-10s%n",
                 "ID", "FILE", "PEER", "DIR", "SIZE", "PROGRESS", "STATE", "SPEED"));
-        sb.append("-".repeat(36)).append("-+-")
+        sb.append("-".repeat(10)).append("-+-")
                 .append("-".repeat(16)).append("-+-")
                 .append("-".repeat(12)).append("-+-")
                 .append("-".repeat(8)).append("-+-")
@@ -662,10 +667,11 @@ public class CommandLineInterface implements MessageListener {
                 var pid = t.getDirection() == TransferDirection.UPLOAD ? t.getFileMetadata().recipientId() : t.getFileMetadata().senderId();
                 peerName = node.getPeerManager().findPeer(pid).map(Peer::getDisplayName).orElse("peer");
             }
-            String speedStr = t.getState() == TransferState.TRANSFERRING ? String.format("%.1f KB/s", t.getTransferSpeedBps() / 1024.0) : "-";
+            String speedStr = t.getState() == TransferState.TRANSFERRING ?
+                    String.format("%.1f MB/s", t.getTransferSpeedBps() / (1024.0 * 1024.0)) : "-";
 
-            sb.append(String.format("%-36s | %-16s | %-12s | %-8s | %-10s | %-7.1f%% | %-12s | %-10s%n",
-                    t.getTransferId(),
+            sb.append(String.format("%-10s | %-16s | %-12s | %-8s | %-10s | %-7.1f%% | %-12s | %-10s%n",
+                    t.getShortId(),
                     truncate(fileName, 16),
                     truncate(peerName, 12),
                     t.getDirection(),
@@ -694,20 +700,21 @@ public class CommandLineInterface implements MessageListener {
 
         Transfer transfer = transferOpt.get();
         if (transfer.getState() == TransferState.COMPLETED) {
-            return CommandResult.ok("Transfer " + transfer.getTransferId() + " is already completed.");
+            return CommandResult.ok("Transfer " + transfer.getShortId() + " (" + transfer.getTransferId() + ") is already completed.");
         }
         if (transfer.getState() == TransferState.TRANSFERRING) {
-            return CommandResult.ok("Transfer " + transfer.getTransferId() + " is already actively transferring.");
+            return CommandResult.ok("Transfer " + transfer.getShortId() + " (" + transfer.getTransferId() + ") is already actively transferring.");
         }
 
-        println("[TRANSFER] Resuming transfer " + transfer.getTransferId() + " (" +
+        println("[TRANSFER] Resuming transfer " + transfer.getShortId() + " (" +
                 (transfer.getFileMetadata() != null ? transfer.getFileMetadata().fileName() : "file") + ")...");
         try {
             CompletableFuture<Transfer> future = node.resumeTransfer(transfer.getTransferId());
             Transfer result = future.get(ProtocolConstants.DEFAULT_FILE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            return CommandResult.ok("[TRANSFER] Transfer " + result.getTransferId() + " resumed successfully and completed.");
+            return CommandResult.ok("[TRANSFER] Transfer " + result.getShortId() + " (" + result.getTransferId() + ") resumed successfully and completed.");
         } catch (Exception e) {
-            String msg = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            String msg = cause.getMessage() != null && !cause.getMessage().isBlank() ? cause.getMessage() : cause.getClass().getSimpleName();
             return CommandResult.error("Resume failed: " + msg);
         }
     }
@@ -728,7 +735,7 @@ public class CommandLineInterface implements MessageListener {
 
         Transfer transfer = transferOpt.get();
         node.cancelTransfer(transfer.getTransferId());
-        return CommandResult.ok("Transfer " + transfer.getTransferId() + " cancelled.");
+        return CommandResult.ok("Transfer " + transfer.getShortId() + " (" + transfer.getTransferId() + ") cancelled.");
     }
 
     private CommandResult cmdTrust(Command cmd) {
@@ -901,6 +908,17 @@ public class CommandLineInterface implements MessageListener {
         long hours = minutes / 60;
         long remainingMinutes = minutes % 60;
         return hours + "h " + remainingMinutes + "m";
+    }
+
+    public static String formatDurationSeconds(long seconds) {
+        if (seconds < 0) return "--:--";
+        if (seconds >= 3600) {
+            long h = seconds / 3600;
+            long m = (seconds % 3600) / 60;
+            long s = seconds % 60;
+            return String.format("%02d:%02d:%02d", h, m, s);
+        }
+        return String.format("%02d:%02d", seconds / 60, seconds % 60);
     }
 
     private static String truncate(String str, int maxLen) {

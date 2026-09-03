@@ -109,7 +109,7 @@ public class Transfer {
                 this.status = TransferStatus.COMPLETED;
                 this.completedTimeMs = System.currentTimeMillis();
             }
-            case FAILED -> {
+            case FAILED, TIMED_OUT -> {
                 this.status = TransferStatus.FAILED;
                 this.completedTimeMs = System.currentTimeMillis();
             }
@@ -118,6 +118,38 @@ public class Transfer {
                 this.completedTimeMs = System.currentTimeMillis();
             }
             case INTERRUPTED, RESUMABLE, RESUMING -> this.status = TransferStatus.PAUSED;
+        }
+    }
+
+    /**
+     * Returns a concise human-readable transfer identifier (e.g. "TX-8F32A1").
+     */
+    public String getShortId() {
+        if (transferId == null) return "TX-000000";
+        String raw = transferId.toString().replace("-", "").toUpperCase();
+        return "TX-" + raw.substring(0, Math.min(6, raw.length()));
+    }
+
+    /**
+     * Matches either the full UUID or the human-readable short ID.
+     */
+    public boolean matchesIdentifier(String identifier) {
+        if (identifier == null || identifier.isBlank()) return false;
+        String trimmed = identifier.trim().toUpperCase();
+        if (trimmed.equalsIgnoreCase(transferId.toString())) return true;
+        if (trimmed.equalsIgnoreCase(getShortId())) return true;
+        if (trimmed.startsWith("TX-") && trimmed.substring(3).equalsIgnoreCase(getShortId().substring(3))) return true;
+        return transferId.toString().toUpperCase().startsWith(trimmed);
+    }
+
+    public boolean isCancelled() {
+        return state == TransferState.CANCELLED;
+    }
+
+    public synchronized void cancel(String reason) {
+        this.errorMessage = reason != null ? reason : "Cancelled";
+        if (state.canTransitionTo(TransferState.CANCELLED)) {
+            transitionTo(TransferState.CANCELLED);
         }
     }
 
@@ -206,6 +238,28 @@ public class Transfer {
 
     public long getCompletedTimeMs() {
         return completedTimeMs;
+    }
+
+    public long getElapsedDurationMs() {
+        long end = completedTimeMs > 0 ? completedTimeMs : System.currentTimeMillis();
+        return Math.max(0, end - startTimeMs);
+    }
+
+    /**
+     * Calculates estimated remaining seconds based on current transfer speed.
+     * Returns 0 if transfer is completed or remaining bytes is 0.
+     * Returns -1 if speed is unknown or 0.
+     */
+    public long getEstimatedRemainingSeconds() {
+        if (state == TransferState.COMPLETED || bytesTransferred >= totalBytes) {
+            return 0;
+        }
+        double speed = getTransferSpeedBps();
+        if (speed <= 0) {
+            return -1;
+        }
+        long remainingBytes = Math.max(0, totalBytes - bytesTransferred);
+        return (long) Math.ceil(remainingBytes / speed);
     }
 
     public String getErrorMessage() {

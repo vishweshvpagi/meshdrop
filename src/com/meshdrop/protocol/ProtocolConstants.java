@@ -33,8 +33,20 @@ public final class ProtocolConstants {
     /** Default file transfer offer acceptance timeout in milliseconds */
     public static final int DEFAULT_FILE_OFFER_TIMEOUT_MS = 30_000;
 
-    /** Default file transfer inactivity/idle timeout in milliseconds */
-    public static final int DEFAULT_FILE_TRANSFER_IDLE_TIMEOUT_MS = 15_000;
+    /** Default file transfer streaming idle inactivity timeout in milliseconds (60s) */
+    public static final int DEFAULT_FILE_TRANSFER_IDLE_TIMEOUT_MS = 60_000;
+
+    /** Maximum allowable file size accepted over peer transfers (100 GiB) */
+    public static final long MAX_ACCEPTED_FILE_SIZE = 100L * 1024 * 1024 * 1024;
+
+    /** Maximum concurrent in-flight transfers per node */
+    public static final int MAX_CONCURRENT_TRANSFERS = 10;
+
+    /** Maximum concurrent pending inbound file transfer offers awaiting decision */
+    public static final int MAX_PENDING_OFFERS = 20;
+
+    /** Safety margin buffer required when validating free disk space (10 MiB) */
+    public static final long DISK_SAFETY_BUFFER_BYTES = 10 * 1024 * 1024;
 
     /** Default handshake timeout in milliseconds */
     public static final int DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;

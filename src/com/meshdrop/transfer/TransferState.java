@@ -2,7 +2,8 @@ package com.meshdrop.transfer;
 
 /**
  * State machine representing the lifecycle stages of a file transfer,
- * including interruption, recoverable checkpoints, and resumption.
+ * including offer negotiation, chunked streaming, verification, interruption,
+ * recoverable checkpoints, cancellation, and resumption.
  */
 public enum TransferState {
     OFFERING,
@@ -14,6 +15,7 @@ public enum TransferState {
     REJECTED,
     FAILED,
     CANCELLED,
+    TIMED_OUT,
     INTERRUPTED,
     RESUMABLE,
     RESUMING;
@@ -26,17 +28,17 @@ public enum TransferState {
             return true; // Idempotent
         }
 
-        // Terminal states cannot transition to anything, except FAILED which can be resumed
+        // Terminal states cannot transition to anything, except FAILED/TIMED_OUT which can be resumed
         if (this == COMPLETED || this == REJECTED || this == CANCELLED) {
             return false;
         }
 
-        if (this == FAILED) {
+        if (this == FAILED || this == TIMED_OUT) {
             return next == RESUMING || next == RESUMABLE;
         }
 
-        // Any non-terminal state can transition to FAILED or CANCELLED
-        if (next == FAILED || next == CANCELLED) {
+        // Any non-terminal state can transition to FAILED, CANCELLED, or TIMED_OUT
+        if (next == FAILED || next == CANCELLED || next == TIMED_OUT) {
             return true;
         }
 
@@ -54,10 +56,10 @@ public enum TransferState {
     }
 
     public boolean isTerminal() {
-        return this == COMPLETED || this == REJECTED || this == FAILED || this == CANCELLED;
+        return this == COMPLETED || this == REJECTED || this == FAILED || this == CANCELLED || this == TIMED_OUT;
     }
 
     public boolean isResumable() {
-        return this == INTERRUPTED || this == RESUMABLE || this == FAILED;
+        return this == INTERRUPTED || this == RESUMABLE || this == FAILED || this == TIMED_OUT;
     }
 }

@@ -61,9 +61,9 @@ public class TransferManager {
             if (match != null) return Optional.of(match);
         } catch (IllegalArgumentException ignored) {}
 
-        // 2. Prefix or filename match
+        // 2. Short ID, prefix, or filename match
         return transfers.values().stream()
-                .filter(t -> t.getTransferId().toString().toLowerCase().startsWith(q) ||
+                .filter(t -> t.matchesIdentifier(query) ||
                         (t.getFileMetadata() != null && t.getFileMetadata().fileName().toLowerCase().contains(q)))
                 .findFirst();
     }

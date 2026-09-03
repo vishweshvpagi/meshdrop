@@ -102,6 +102,11 @@ public class FileSender {
             } else {
                 int bytesRead;
                 while ((bytesRead = channel.read(buf)) != -1) {
+                    if (transfer.isCancelled() || transfer.getState() == TransferState.CANCELLED) {
+                        Logger.info("[TRANSFER] Streaming cancelled for transfer " + transfer.getShortId());
+                        throw new IOException("Transfer was cancelled");
+                    }
+
                     if (bytesRead == 0) continue;
                     buf.flip();
                     byte[] chunkData = new byte[bytesRead];
@@ -123,6 +128,10 @@ public class FileSender {
                 }
             }
 
+            if (transfer.isCancelled() || transfer.getState() == TransferState.CANCELLED) {
+                throw new IOException("Transfer was cancelled");
+            }
+
             // Transmit FILE_COMPLETE
             transfer.transitionTo(TransferState.VERIFYING);
             String sha256 = transfer.getFileMetadata() != null ? transfer.getFileMetadata().sha256() : "";
@@ -131,17 +140,19 @@ public class FileSender {
             Logger.fine("[TRANSFER] Completed sending all chunks up to " + chunkIndex + " for " + transfer.getTransferId());
 
         } catch (IOException e) {
-            transfer.setErrorMessage(e.getMessage());
-            if (!transfer.getState().isTerminal()) {
-                transfer.transitionTo(TransferState.FAILED);
+            if (transfer.getState() != TransferState.CANCELLED) {
+                transfer.setErrorMessage(e.getMessage());
+                if (!transfer.getState().isTerminal()) {
+                    transfer.transitionTo(TransferState.FAILED);
+                }
+                if (listener != null) {
+                    listener.onTransferFailed(transfer, e.getMessage());
+                    listener.onTransferInterrupted(transfer);
+                }
+                try {
+                    connection.sendPacket(Packet.createFileError(transfer.getTransferId(), "Send failed: " + e.getMessage()));
+                } catch (Exception ignored) {}
             }
-            if (listener != null) {
-                listener.onTransferFailed(transfer, e.getMessage());
-                listener.onTransferInterrupted(transfer);
-            }
-            try {
-                connection.sendPacket(Packet.createFileError(transfer.getTransferId(), "Send failed: " + e.getMessage()));
-            } catch (Exception ignored) {}
             throw e;
         }
     }

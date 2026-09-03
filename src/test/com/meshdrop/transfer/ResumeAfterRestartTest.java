@@ -89,10 +89,16 @@ public class ResumeAfterRestartTest {
             // Reconnect A to B2
             int portB2 = nodeB2.getTcpServer().getLocalPort();
             nodeA.connectTo("127.0.0.1", portB2);
-            Thread.sleep(300);
-
-            Peer peerB2 = nodeA.getPeerManager().findPeer(idB).orElseThrow();
-            assert peerB2.isConnected();
+            long deadline = System.currentTimeMillis() + 3000;
+            Peer peerB2 = null;
+            while (System.currentTimeMillis() < deadline) {
+                peerB2 = nodeA.getPeerManager().findPeer(idB).orElse(null);
+                if (peerB2 != null && peerB2.isConnected() && peerB2.getConnection() != null && peerB2.getConnection().isReady()) {
+                    break;
+                }
+                Thread.sleep(50);
+            }
+            assert peerB2 != null && peerB2.isConnected() : "Peer NodeB2 must be connected";
 
             // Resume transfer
             CompletableFuture<Transfer> resumeFuture = nodeA.getFileTransferService().resumeTransfer(tid, peerB2);
