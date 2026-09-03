@@ -1,0 +1,29 @@
+# Compilation outputs
+out/
+bin/
+*.class
+
+# Storage runtime data
+storage/downloads/*
+!storage/downloads/.gitkeep
+storage/temp/*
+!storage/temp/.gitkeep
+storage/*.dat
+data/
+*.tmp
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.settings/
+
+# OS and Log files
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
