@@ -37,7 +37,7 @@ public class TcpConnection implements AutoCloseable {
 
     private static final AtomicLong ID_COUNTER = new AtomicLong(0);
     private static final int CONNECT_TIMEOUT_MS = 10_000;
-    private static final int IO_BUFFER_SIZE = 16 * 1024;
+    private static final int IO_BUFFER_SIZE = 64 * 1024;
 
     private final long connectionId;
     private final Socket socket;
@@ -114,6 +114,8 @@ public class TcpConnection implements AutoCloseable {
     private static void configureSocket(Socket socket) throws SocketException {
         socket.setTcpNoDelay(true);
         socket.setKeepAlive(true);
+        socket.setSendBufferSize(256 * 1024);
+        socket.setReceiveBufferSize(256 * 1024);
     }
 
     public void addCloseListener(Consumer<TcpConnection> listener) {

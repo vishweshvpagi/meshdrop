@@ -4,6 +4,7 @@ import com.meshdrop.protocol.ProtocolConstants;
 import com.meshdrop.storage.StorageManager;
 import com.meshdrop.util.Logger;
 
+import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -33,10 +34,15 @@ public class FileReceiver implements AutoCloseable {
     private final TransferListener listener;
     private final MessageDigest digest;
 
+    private static final int BUFFER_SIZE = 256 * 1024;
+    private static final int CHECKPOINT_CHUNK_INTERVAL = 32; // Checkpoint every ~2MB
+    private static final long CHECKPOINT_MS_INTERVAL = 1000;  // Or at least every 1s
+
     private OutputStream out;
     private TransferCheckpoint checkpoint;
     private long expectedOffset = 0;
     private int expectedChunkIndex = 0;
+    private long lastCheckpointTime = System.currentTimeMillis();
     private boolean completed = false;
     private boolean closed = false;
 
@@ -115,7 +121,7 @@ public class FileReceiver implements AutoCloseable {
             this.checkpoint = resumeCheckpoint;
 
             // Open in APPEND mode
-            this.out = Files.newOutputStream(tempFilePath, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+            this.out = new BufferedOutputStream(Files.newOutputStream(tempFilePath, StandardOpenOption.WRITE, StandardOpenOption.APPEND), BUFFER_SIZE);
 
             transfer.setLocalPath(tempFilePath);
             transfer.setBytesTransferred(expectedOffset);
@@ -126,7 +132,7 @@ public class FileReceiver implements AutoCloseable {
                     " at chunk " + expectedChunkIndex + " (offset " + expectedOffset + " bytes)");
         } else {
             // Fresh transfer initialization
-            this.out = Files.newOutputStream(tempFilePath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            this.out = new BufferedOutputStream(Files.newOutputStream(tempFilePath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE), BUFFER_SIZE);
             this.checkpoint = TransferCheckpoint.initial(metadata, ProtocolConstants.DEFAULT_FILE_CHUNK_SIZE);
             this.recoveryManager.saveCheckpoint(checkpoint);
 
@@ -204,17 +210,22 @@ public class FileReceiver implements AutoCloseable {
         }
 
         out.write(chunk.data());
-        out.flush();
         digest.update(chunk.data());
 
         expectedOffset += chunk.length();
         expectedChunkIndex++;
 
-        // Persist updated checkpoint
-        if (recoveryManager != null) {
+        // Persist updated checkpoint periodically (on chunk 1, every 32 chunks, or every 1000ms)
+        boolean shouldCheckpoint = (expectedChunkIndex == 1) ||
+                (expectedChunkIndex % CHECKPOINT_CHUNK_INTERVAL == 0) ||
+                (System.currentTimeMillis() - lastCheckpointTime >= CHECKPOINT_MS_INTERVAL);
+
+        if (recoveryManager != null && shouldCheckpoint) {
+            out.flush();
             checkpoint = checkpoint.withProgress(expectedChunkIndex, expectedOffset, expectedOffset);
             transfer.setCheckpoint(checkpoint);
             recoveryManager.saveCheckpoint(checkpoint);
+            lastCheckpointTime = System.currentTimeMillis();
         }
 
         if (transfer != null && (transfer.getState() == TransferState.WAITING_FOR_ACCEPT ||
@@ -337,6 +348,16 @@ public class FileReceiver implements AutoCloseable {
                 out.close();
             } catch (IOException ignored) {}
             out = null;
+        }
+
+        if (recoveryManager != null && checkpoint != null) {
+            try {
+                checkpoint = checkpoint.withProgress(expectedChunkIndex, expectedOffset, expectedOffset);
+                if (transfer != null) {
+                    transfer.setCheckpoint(checkpoint);
+                }
+                recoveryManager.saveCheckpoint(checkpoint);
+            } catch (IOException ignored) {}
         }
 
         if (transfer != null) {

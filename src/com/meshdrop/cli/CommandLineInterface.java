@@ -15,6 +15,7 @@ import com.meshdrop.protocol.ProtocolConstants;
 import com.meshdrop.transfer.FileMetadata;
 import com.meshdrop.transfer.Transfer;
 import com.meshdrop.transfer.TransferDirection;
+import com.meshdrop.transfer.TransferListener;
 import com.meshdrop.transfer.TransferState;
 import com.meshdrop.util.Logger;
 
@@ -74,9 +75,23 @@ public class CommandLineInterface implements MessageListener {
             node.getMessageService().addListener(this);
         }
 
-        // Register transfer approval handler
+        // Register transfer approval handler and listener
         if (node.getFileTransferService() != null) {
             node.getFileTransferService().setApprovalHandler(this::handleTransferApproval);
+            node.getFileTransferService().addListener(new TransferListener() {
+                @Override
+                public void onTransferCompleted(Transfer transfer) {
+                    if (transfer.getDirection() == TransferDirection.DOWNLOAD) {
+                        println("");
+                        println("[FILE RECEIVED]");
+                        println("  File:     " + (transfer.getFileMetadata() != null ? transfer.getFileMetadata().fileName() : "unknown"));
+                        println("  Size:     " + formatFileSize(transfer.getTotalBytes()));
+                        println("  Saved to: " + (transfer.getLocalPath() != null ? transfer.getLocalPath().toAbsolutePath().normalize() : "downloads"));
+                        println("  Status:   COMPLETED (SHA-256 Verified)");
+                        printPrompt();
+                    }
+                }
+            });
         }
     }
 
@@ -95,6 +110,7 @@ public class CommandLineInterface implements MessageListener {
         commands.put("send", this::cmdSend);
         commands.put("sendfile", this::cmdSendFile);
         commands.put("autoaccept", this::cmdAutoAccept);
+        commands.put("downloads", this::cmdDownloads);
         commands.put("transfers", this::cmdTransfers);
         commands.put("resume", this::cmdResume);
         commands.put("cancel", this::cmdCancel);
@@ -208,6 +224,7 @@ public class CommandLineInterface implements MessageListener {
         sb.append(String.format("%-24s%s%n", "send <peer> <message>", "Send a message"));
         sb.append(String.format("%-24s%s%n", "sendfile <peer> <path>", "Send a file"));
         sb.append(String.format("%-24s%s%n", "autoaccept [on|off]", "Toggle auto-accept for incoming files"));
+        sb.append(String.format("%-24s%s%n", "downloads [open]", "View downloads folder or open in Explorer"));
         sb.append(String.format("%-24s%s%n", "transfers", "Show transfers"));
         sb.append(String.format("%-24s%s%n", "resume <transferId>", "Resume transfer"));
         sb.append(String.format("%-24s%s%n", "cancel <transferId>", "Cancel transfer"));
@@ -495,6 +512,59 @@ public class CommandLineInterface implements MessageListener {
             }
         }
         return CommandResult.ok("Auto-accept is currently " + (autoAccept ? "ENABLED" : "DISABLED") + ".\nType 'autoaccept on' or 'autoaccept off' to change.");
+    }
+
+    private CommandResult cmdDownloads(Command cmd) {
+        Path dlDir = node.getStorageManager() != null ?
+                node.getStorageManager().getDownloadsDir() :
+                node.getConfig().downloadsDir();
+
+        if (dlDir == null) {
+            return CommandResult.error("Downloads directory is not configured");
+        }
+
+        Path absoluteDl = dlDir.toAbsolutePath().normalize();
+
+        if (cmd.argCount() >= 1 && "open".equalsIgnoreCase(cmd.arg(0))) {
+            try {
+                if (!Files.exists(absoluteDl)) {
+                    Files.createDirectories(absoluteDl);
+                }
+                new ProcessBuilder("explorer.exe", absoluteDl.toString()).start();
+                return CommandResult.ok("Opening downloads folder in File Explorer:\n  " + absoluteDl);
+            } catch (Exception e) {
+                return CommandResult.error("Failed to open File Explorer: " + e.getMessage());
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\nDownloads Directory:\n");
+        sb.append("  ").append(absoluteDl).append("\n\n");
+
+        try {
+            if (!Files.exists(absoluteDl)) {
+                Files.createDirectories(absoluteDl);
+            }
+            List<Path> files;
+            try (var stream = Files.list(absoluteDl)) {
+                files = stream.filter(Files::isRegularFile).toList();
+            }
+
+            if (files.isEmpty()) {
+                sb.append("Downloaded files (0): No files in downloads folder yet.");
+            } else {
+                sb.append(String.format("Downloaded files (%d):%n", files.size()));
+                for (Path f : files) {
+                    long size = Files.size(f);
+                    sb.append(String.format("  %-32s %10s%n", f.getFileName(), formatFileSize(size)));
+                }
+            }
+            sb.append("\nTip: Type 'downloads open' to open this folder in Windows File Explorer.");
+        } catch (IOException e) {
+            sb.append("Error reading downloads folder: ").append(e.getMessage());
+        }
+
+        return CommandResult.ok(sb.toString().trim());
     }
 
     private CommandResult cmdSendFile(Command cmd) {

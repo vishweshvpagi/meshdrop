@@ -197,6 +197,7 @@ meshdrop> status
 | `send` | `<peer> <msg>` | Sends an acknowledged text message to a peer |
 | `sendfile` | `<peer> <path>`| Streams file with live progress, speed, ETA, and SHA-256 verification |
 | `autoaccept`| `[on\|off]` | Enables or disables automatic acceptance of incoming file transfers |
+| `downloads` | `[open]` | Views downloads folder path, lists files, or opens folder in File Explorer |
 | `transfers` | None | Formatted table of transfers with `TX-XXXXXX` IDs, speed, and state |
 | `resume` | `<id>` | Resumes an interrupted transfer by short ID (e.g. `TX-8F32A1`) or UUID |
 | `cancel` | `<id>` | Cancels an in-progress transfer by short ID or UUID with resource cleanup |
