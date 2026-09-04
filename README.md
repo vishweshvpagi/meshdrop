@@ -4,7 +4,7 @@
 
 [![Java 26](https://img.shields.io/badge/Java-26-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-success)](https://github.com/)
-[![Tests](https://img.shields.io/badge/Test%20Suites-77%2F77%20Passed-brightgreen)](scripts/test.ps1)
+[![Tests](https://img.shields.io/badge/Test%20Suites-80%2F80%20Passed-brightgreen)](scripts/test.ps1)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20PowerShell-blue)](https://microsoft.com/)
 
 ---
@@ -133,7 +133,7 @@ Compiles all Java source files into `out/`:
 ```
 
 ### Run Full Regression Test Suite
-Compiles and executes all 75 automated test suites:
+Compiles and executes all 80 automated test suites:
 ```powershell
 .\scripts\test.ps1
 ```
@@ -212,6 +212,7 @@ meshdrop> status
 | `autoaccept`| `[on\|off]` | Enables or disables automatic acceptance of incoming file transfers |
 | `downloads` | `[open]` | Views downloads folder path, lists files, or opens folder in File Explorer |
 | `transfers` | None | Formatted table of transfers with `TX-XXXXXX` IDs, speed, and state |
+| `transfer-debug`| `<id>` | Detailed in-flight window, retry count, and checkpoint metrics |
 | `resume` | `<id>` | Resumes an interrupted transfer by short ID (e.g. `TX-8F32A1`) or UUID |
 | `cancel` | `<id>` | Cancels an in-progress transfer by short ID or UUID with resource cleanup |
 | `trust` | `<peer>` | Explicitly trusts a peer's identity and pins their fingerprint |
@@ -224,7 +225,7 @@ meshdrop> status
 
 ## 9. Test Suite Summary
 
-MeshDrop includes a standalone, zero-dependency test runner executing **77 distinct test suites** covering all layers of the architecture:
+MeshDrop includes a standalone, zero-dependency test runner executing **80 distinct test suites** covering all layers of the architecture:
 
 ```text
 =========================================
@@ -305,8 +306,13 @@ MeshDrop includes a standalone, zero-dependency test runner executing **77 disti
 [RUN]  CryptoUtilsTest ........... PASSED
 [RUN]  TrustStoreTest ............ PASSED
 [RUN]  StorageManagerTest ........ PASSED
+[RUN]  TransferHardeningTest ..... PASSED
+[RUN]  LargeFileTransferEngine ... PASSED
+[RUN]  TransferCodecExtendedTest . PASSED
+[RUN]  SlidingWindowFlowControl .. PASSED
+[RUN]  RealInterruptedResumeTest . PASSED
 =========================================
-Results: 75 passed, 0 failed (100%)
+Results: 80 passed, 0 failed (100%)
 =========================================
 ```
 
@@ -337,8 +343,10 @@ MeshDrop/
 │   ├── run_demo.ps1                    # Launches custom multi-node instance
 │   ├── demo.ps1                        # Automated end-to-end multi-node live demo
 │   ├── demo_resume.ps1                 # Automated transfer resume live demo
+│   ├── run-500mb.ps1                   # End-to-end 500 MB sliding-window transfer test
+│   ├── run-1gb.ps1                     # End-to-end 1 GB stress test with bounded heap monitoring
 │   ├── create_demo_file.ps1            # Generates deterministic test files
-│   ├── test.ps1                        # Executes all 75 automated test suites
+│   ├── test.ps1                        # Executes all 80 automated test suites
 │   └── clean.ps1                       # Purges compiled bytecode in out/
 └── src/                                # Pure standard library source code
     ├── com/meshdrop/                   # Production application

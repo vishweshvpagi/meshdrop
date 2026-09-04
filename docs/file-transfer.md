@@ -83,7 +83,10 @@ All file transfer packets use the standard MeshDrop 28-byte binary header with m
 | `FILE_COMPLETE` | `0x12` | 16B TransferId + 4B TotalChunks + 8B TotalBytes + 64B SHA256 |
 | `FILE_ACCEPT` | `0x15` | 16B TransferId |
 | `FILE_REJECT` | `0x16` | 16B TransferId + 2B ReasonLen + $M$ bytes Reason |
-| `FILE_ACK` | `0x17` | 16B TransferId + 1B Success (1/0) + 8B Timestamp |
+| `FILE_ACK` (Terminal) | `0x17` | 16B TransferId + 1B Success (1/0) + 8B Timestamp (25 bytes) |
+| `FILE_CHUNK_ACK` (Extended) | `0x17` | 16B TransferId + 1B Success (1/0) + 8B Timestamp + 8B HighestContiguousChunk + 8B ReceiverOffset (41 bytes) |
+| `FILE_RESUME_REQUEST` | `0x13` | 16B TransferId + 4B RequestedChunk + 8B RequestedOffset + 64B SHA256 + 2B NameLen + $N$ bytes FileName (124+N bytes) |
+| `FILE_RESUME_RESPONSE` | `0x14` | 16B TransferId + 1B Accepted + 4B ResumeChunk + 8B ResumeOffset + 2B ReasonLen + $M$ bytes Reason (39+M bytes) |
 | `FILE_ERROR` | `0x18` | 16B TransferId + 2B MsgLen + $E$ bytes ErrorMessage |
 
 ---
@@ -151,6 +154,30 @@ File Transfers
    Speed:    18.4 MB/s
 ```
 
+### Inspect Transfer Debug State
+```text
+meshdrop> transfer-debug 60866179-3181-48f3-b197-130d8e8d79cf
+
+Transfer Debug State: 60866179-3181-48f3-b197-130d8e8d79cf
+------------------------------------------------------------
+State:         TRANSFERRING
+Direction:     UPLOAD
+File:          presentation.pdf (14.2 MB)
+Transferred:   8.4 MB (59.2%)
+Speed:         Instant: 42.1 MB/s | Average: 39.8 MB/s
+ETA:           00:01 (Elapsed: 00:01)
+Local Path:    C:\Data\presentation.pdf
+
+Active Sender Info:
+  Window Size:     8
+  Base Chunk:      131
+  Next Chunk:      139
+  In-Flight:       8
+  Highest Acked:   130 (offset: 8519680)
+  Retries:         0
+  Failed:          false
+```
+
 ---
 
 ## 7. Sliding-Window Flow Control & Reliable Streaming
@@ -165,7 +192,7 @@ Sender                                                        Receiver
   │─── FILE_CHUNK (chunk 2, len 64KB) ──────────────────────────►│
   │─── FILE_CHUNK (chunk 3, len 64KB) ──────────────────────────►│
   │                                                              │
-  │◄── FILE_CHUNK_ACK (chunk 0 acked, next expected off) ────────│ (Window slides)
+  │◄── FILE_CHUNK_ACK (highestContiguous=0, off=65536) ──────────│ (Window slides)
   │─── FILE_CHUNK (chunk 4, len 64KB) ──────────────────────────►│
   │                                                              │
   │    [Timeout / Unacked detection]                             │
@@ -174,9 +201,11 @@ Sender                                                        Receiver
 
 ### Flow Control Rules
 1. **Window Size Bounds**: The sender dispatches up to `windowSize` (default: 8, max: 64) unacknowledged chunks before pausing and awaiting window progress.
-2. **Cumulative ACKs**: As receiver persists chunks, it transmits 41-byte `FILE_CHUNK_ACK` packets conveying `highestContiguousChunk` and `receiverOffset`.
+2. **Cumulative ACKs**: As receiver persists chunks, it transmits 41-byte `FILE_CHUNK_ACK` packets conveying `highestContiguousChunk` and `receiverOffset`. All chunks $\le \text{highestContiguousChunk}$ are acknowledged and retired.
 3. **ACK Timeout & Retransmission**: Oldest unacknowledged in-flight chunks are timed (`ackTimeoutMs = 5000ms`). If unacknowledged, sender retransmits the missing chunk with exponential backoff up to `maxRetries = 5`.
-4. **Source Mutation Detection**: Sender records `fileSize` and `lastModifiedTime` at start of transfer. Prior to streaming and before `FILE_COMPLETE`, sender verifies source attributes on disk. If mutation is detected, transfer safely aborts with an explicit error.
+4. **Idempotent Duplicate Chunks**: Retransmitted chunks that were already written to disk are safely ignored by the receiver without corrupting the cryptographic digest or file offsets. The receiver immediately echoes the current cumulative ACK.
+5. **Dynamic Transport Migration**: If dual simultaneous outbound connections arbitrate to a single connection in `PeerManager`, active transfer sessions automatically migrate their underlying TCP socket to the winning connection before the redundant socket is closed.
+6. **Source Mutation Detection**: Sender records `fileSize` and `lastModifiedTime` at start of transfer. Prior to streaming and before `FILE_COMPLETE`, sender verifies source attributes on disk. If mutation is detected, transfer safely aborts with an explicit error.
 
 ---
 

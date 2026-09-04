@@ -47,12 +47,23 @@ meshdrop>
 | `help` | `help` | Displays available commands and their syntax. |
 | `status` | `status` | Displays node state, identity, TCP/UDP ports, peer counts, and connection counts. |
 | `info` | `info` | Displays node identity and configuration settings. |
-| `peers` | `peers` | Renders a numbered list of known peers (Name, ID, Address, State). |
+| `peers` | `peers` | Renders a table of known peers (ID, Name, Address, State, Trust). |
 | `connections` | `connections` | Lists all active TCP connections (Remote name, ID, Remote address, State). |
+| `connect` | `connect <host> [port]` | Directly establishes an outbound TCP connection to a peer. |
 | `discover` | `discover` | Displays UDP discovery status and broadcasts an announcement beacon. |
 | `send` | `send <peer> <message>` | Transmits a `MESSAGE` packet to a connected peer. |
+| `sendfile` | `sendfile <peer> <path>` | Transmits a file using streaming sliding-window flow control. |
+| `autoaccept`| `autoaccept [on\|off]` | Toggles auto-acceptance of incoming file transfer offers. |
+| `downloads` | `downloads [open]` | Views downloads directory or opens it in File Explorer. |
+| `transfers` | `transfers` | Lists active and past file transfers with status and speed. |
+| `transfer-debug` | `transfer-debug <id>` | Shows granular sliding-window, retry, and checkpoint metrics. |
+| `resume` | `resume <transferId>` | Resumes an interrupted transfer from on-disk checkpoint. |
+| `cancel` | `cancel <transferId>` | Cancels an active or interrupted transfer. |
 | `ping` | `ping <peer>` | Measures round-trip application latency using `PING`/`PONG` frames. |
-| `clear` | `clear` | Clears the console using `cmd /c cls` or ANSI escape sequences with fallback newlines. |
+| `trust` | `trust <peer>` | Explicitly trusts a peer's cryptographic identity fingerprint. |
+| `untrust` | `untrust <peer>` | Sets a peer's trust status back to untrusted. |
+| `block` | `block <peer>` | Blocks a peer, refusing incoming connections and offers. |
+| `clear` | `clear` | Clears the console using `cmd /c cls` or ANSI escape sequences. |
 | `exit` / `quit` | `exit` or `quit` | Gracefully shuts down CLI and initiates node shutdown. |
 
 ---
@@ -66,17 +77,30 @@ meshdrop> help
 
 MeshDrop commands:
 
-help                         Show this help
-status                       Show node status
-info                         Show local node information
-peers                        List known peers
-connections                  List active connections
-discover                     Start LAN peer discovery
-send <peer> <message>        Send a message
-ping <peer>                  Ping a peer
-clear                        Clear the terminal
-exit                         Shut down MeshDrop
-quit                         Shut down MeshDrop
+------------------------------------------------
+MeshDrop Commands
+------------------------------------------------
+peers                   List discovered peers
+connections             Show TCP connections
+connect <host> [port]   Connect to a peer directly
+status                  Show node status
+info                    Show local identity
+discover                Run peer discovery
+send <peer> <message>   Send a message
+sendfile <peer> <path>  Send a file
+autoaccept [on|off]     Toggle auto-accept for incoming files
+downloads [open]        View downloads folder or open in Explorer
+transfers               Show transfers
+transfer-debug <id>     Show debug metrics for a transfer
+resume <transferId>     Resume transfer
+cancel <transferId>     Cancel transfer
+ping <peer>             Ping peer
+trust <peer>            Trust peer identity
+untrust <peer>          Untrust peer identity
+block <peer>            Block peer
+clear                   Clear terminal
+exit                    Shutdown MeshDrop
+------------------------------------------------
 ```
 
 ### 4.2 `status`
@@ -210,7 +234,75 @@ Latency: 4 ms
 ```
 If timeout occurs (5000 ms default): `Error: request timed out`
 
-### 4.10 `exit` / `quit`
+### 4.10 `sendfile <peer> <path>`
+Transmits a local file to a remote peer using streaming sliding-window flow control:
+```text
+meshdrop> sendfile Alice "C:\movies\sample.mp4"
+Preparing file...
+Sending sample.mp4
+Size: 500.0 MB
+SHA-256: 4f8a...
+Waiting for Alice to accept...
+[TRANSFER] Accepted by Alice. Streaming data...
+[====================] 100.0% | 500.0 MB / 500.0 MB |  54.2 MB/s | ETA: 00:00 | TX-0214D6
+Transfer completed.
+```
+
+### 4.11 `autoaccept [on|off]`
+Enables or disables automatic acceptance of incoming file offers:
+```text
+meshdrop> autoaccept on
+Auto-accept enabled for incoming file transfers.
+```
+
+### 4.12 `downloads [open]`
+Lists the contents of the local downloads directory or opens it in File Explorer:
+```text
+meshdrop> downloads
+Downloads Directory: C:\Users\VBP\Downloads\MeshDrop
+- presentation.pdf (14.2 MB)
+- sample.mp4 (500.0 MB)
+```
+
+### 4.13 `transfers`
+Displays all active, completed, and interrupted transfers:
+```text
+meshdrop> transfers
+
+File Transfers
+--------------
+1. UPLOAD (COMPLETED)
+   ID:       60866179-3181-48f3-b197-130d8e8d79cf
+   File:     presentation.pdf
+   Progress: 100.0% (14.2 MB / 14.2 MB)
+   Speed:    18.4 MB/s
+```
+
+### 4.14 `transfer-debug <id>`
+Inspects real-time sliding window, retry counters, in-flight packet counts, and checkpoint state:
+```text
+meshdrop> transfer-debug 60866179-3181-48f3-b197-130d8e8d79cf
+```
+
+### 4.15 `resume <transferId>`
+Resumes an interrupted transfer from its local on-disk checkpoint without re-sending previously verified chunks:
+```text
+meshdrop> resume 0214d6a2-a77b-47e1-ab21-cc8e7c3017b6
+Resuming transfer...
+Progress: [=======             ] 35.8% (Resumed from chunk 5)
+```
+
+### 4.16 `cancel <transferId>`
+Cancels an active or paused transfer, notifying the remote peer and cleaning up resources.
+
+### 4.17 `trust <peer>` / `untrust <peer>` / `block <peer>`
+Manages peer trust levels based on cryptographic fingerprints:
+```text
+meshdrop> trust Alice
+Peer Alice is now TRUSTED.
+```
+
+### 4.18 `exit` / `quit`
 Initiates graceful shutdown:
 ```text
 meshdrop> exit

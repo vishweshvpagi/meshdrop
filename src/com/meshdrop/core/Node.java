@@ -471,7 +471,10 @@ public class Node {
                     while (!peer.isConnected() && System.currentTimeMillis() < deadline) {
                         try {
                             Thread.sleep(100);
-                        } catch (InterruptedException ignored) {}
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                     }
                 } catch (Exception e) {
                     return CompletableFuture.failedFuture(new IOException("Failed to reconnect to peer: " + e.getMessage(), e));
