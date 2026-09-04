@@ -48,6 +48,7 @@ public class FileTransferService {
     private final ConcurrentHashMap<UUID, CompletableFuture<Transfer>> pendingOfferFutures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, CompletableFuture<Transfer>> pendingResumeFutures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, FileReceiver> activeReceivers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, FileSender> activeSenders = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, TcpConnection> transferConnections = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
 
@@ -399,10 +400,11 @@ public class FileTransferService {
         transfer.transitionTo(TransferState.ACCEPTED);
         Logger.info("[TRANSFER] Peer accepted transfer " + transferId + ". Starting streaming upload...");
 
-        // Stream file chunks in a virtual thread
+        // Stream file chunks in a virtual thread with sliding-window flow control
         Thread.ofVirtual().name("sender-stream-" + transferId).start(() -> {
+            FileSender sender = new FileSender(chunkSize, ProtocolConstants.DEFAULT_WINDOW_SIZE);
+            activeSenders.put(transferId, sender);
             try {
-                FileSender sender = new FileSender(chunkSize);
                 sender.streamFile(transfer.getLocalPath(), connection, transfer, createListenerForwarder());
             } catch (Exception e) {
                 Logger.warn("[TRANSFER] Upload stream failed: " + e.getMessage());
@@ -410,6 +412,8 @@ public class FileTransferService {
                 if (future != null) {
                     future.completeExceptionally(e);
                 }
+            } finally {
+                activeSenders.remove(transferId);
             }
         });
     }
@@ -443,6 +447,8 @@ public class FileTransferService {
         if (receiver != null) {
             try {
                 receiver.receiveChunk(chunk);
+                // Send cumulative progress ACK for sliding-window flow control
+                connection.sendPacket(Packet.createFileChunkAck(chunk.transferId(), chunk.chunkIndex(), receiver.getExpectedOffset()));
             } catch (IOException e) {
                 Logger.severe("[TRANSFER] Receiver failed on chunk " + chunk.chunkIndex() + ": " + e.getMessage(), e);
                 receiver.abort(e.getMessage());
@@ -478,6 +484,16 @@ public class FileTransferService {
     private void handleFileAck(TcpConnection connection, Packet packet) {
         try {
             var ack = packet.decodeFileAck();
+
+            // Sliding-window progress ACK
+            if (ack.isWindowAck()) {
+                FileSender sender = activeSenders.get(ack.transferId());
+                if (sender != null) {
+                    sender.onAckReceived(ack.highestContiguousChunk(), ack.receiverOffset());
+                }
+                return;
+            }
+
             Transfer transfer = transferManager.getTransfer(ack.transferId()).orElse(null);
             CompletableFuture<Transfer> future = pendingOfferFutures.remove(ack.transferId());
             CompletableFuture<Transfer> resumeFuture = pendingResumeFutures.remove(ack.transferId());
@@ -681,10 +697,11 @@ public class FileTransferService {
                     transfer.transitionTo(TransferState.RESUMING);
                 }
 
-                // Stream remaining file chunks in a virtual thread
+                // Stream remaining file chunks in a virtual thread with sliding window
                 Thread.ofVirtual().name("sender-resume-" + resp.transferId()).start(() -> {
+                    FileSender sender = new FileSender(chunkSize, ProtocolConstants.DEFAULT_WINDOW_SIZE);
+                    activeSenders.put(resp.transferId(), sender);
                     try {
-                        FileSender sender = new FileSender(chunkSize);
                         sender.streamFile(
                                 transfer.getLocalPath(),
                                 connection,
@@ -699,6 +716,8 @@ public class FileTransferService {
                         if (future != null && !future.isDone()) {
                             future.completeExceptionally(e);
                         }
+                    } finally {
+                        activeSenders.remove(resp.transferId());
                     }
                 });
             }

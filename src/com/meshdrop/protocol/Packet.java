@@ -177,6 +177,13 @@ public final class Packet {
         return of(PacketType.FILE_ACK, transferId, payload);
     }
 
+    public static Packet createFileChunkAck(UUID transferId, long highestContiguousChunk, long receiverOffset) {
+        Objects.requireNonNull(transferId, "transferId must not be null");
+        byte[] payload = com.meshdrop.transfer.FileTransferCodec.encodeChunkAck(
+                transferId, highestContiguousChunk, receiverOffset, System.currentTimeMillis());
+        return of(PacketType.FILE_ACK, transferId, payload);
+    }
+
     public static Packet createFileError(UUID transferId, String message) {
         Objects.requireNonNull(transferId, "transferId must not be null");
         byte[] payload = com.meshdrop.transfer.FileTransferCodec.encodeError(transferId, message);

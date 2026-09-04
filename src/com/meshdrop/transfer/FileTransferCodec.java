@@ -22,6 +22,7 @@ public final class FileTransferCodec {
     public static final int CHUNK_FIXED_HEADER_BYTES = 32;
     public static final int COMPLETE_PAYLOAD_BYTES = 92;
     public static final int ACK_PAYLOAD_BYTES = 25;
+    public static final int EXTENDED_ACK_PAYLOAD_BYTES = 41;
     public static final int RESUME_REQUEST_PAYLOAD_BYTES = 124;
     public static final int RESUME_RESPONSE_FIXED_HEADER_BYTES = 39;
 
@@ -216,6 +217,9 @@ public final class FileTransferCodec {
         if (length <= 0) {
             throw new ProtocolException("Non-positive length in FILE_CHUNK: " + length);
         }
+        if (length > ProtocolConstants.MAX_FILE_CHUNK_SIZE) {
+            throw new ProtocolException("Chunk length exceeds maximum allowable chunk size: " + length);
+        }
         if (payload.length != CHUNK_FIXED_HEADER_BYTES + length) {
             throw new ProtocolException("FILE_CHUNK length mismatch: expected " +
                     (CHUNK_FIXED_HEADER_BYTES + length) + " bytes, got " + payload.length);
@@ -284,7 +288,21 @@ public final class FileTransferCodec {
     // 6. FILE_ACK (0x17)
     // ========================================================================
 
-    public record AckPayload(UUID transferId, boolean success, long ackTimestamp) {}
+    public record AckPayload(
+            UUID transferId,
+            boolean success,
+            long ackTimestamp,
+            long highestContiguousChunk,
+            long receiverOffset
+    ) {
+        public AckPayload(UUID transferId, boolean success, long ackTimestamp) {
+            this(transferId, success, ackTimestamp, -1L, -1L);
+        }
+
+        public boolean isWindowAck() {
+            return highestContiguousChunk >= 0;
+        }
+    }
 
     public static byte[] encodeAck(UUID transferId, boolean success, long ackTimestamp) {
         Objects.requireNonNull(transferId, "transferId must not be null");
@@ -297,18 +315,37 @@ public final class FileTransferCodec {
         return buf.array();
     }
 
+    public static byte[] encodeChunkAck(UUID transferId, long highestContiguousChunk, long receiverOffset, long ackTimestamp) {
+        Objects.requireNonNull(transferId, "transferId must not be null");
+        ByteBuffer buf = ByteBuffer.allocate(EXTENDED_ACK_PAYLOAD_BYTES);
+        buf.order(ByteOrder.BIG_ENDIAN);
+        buf.putLong(transferId.getMostSignificantBits());
+        buf.putLong(transferId.getLeastSignificantBits());
+        buf.put((byte) 1);
+        buf.putLong(ackTimestamp);
+        buf.putLong(highestContiguousChunk);
+        buf.putLong(receiverOffset);
+        return buf.array();
+    }
+
     public static AckPayload decodeAck(byte[] payload) throws ProtocolException {
-        if (payload == null || payload.length != ACK_PAYLOAD_BYTES) {
+        if (payload == null || (payload.length != ACK_PAYLOAD_BYTES && payload.length != EXTENDED_ACK_PAYLOAD_BYTES)) {
             throw new ProtocolException("Invalid FILE_ACK payload length: expected " +
-                    ACK_PAYLOAD_BYTES + " bytes, got " + (payload == null ? "null" : payload.length));
+                    ACK_PAYLOAD_BYTES + " or " + EXTENDED_ACK_PAYLOAD_BYTES + " bytes, got " + (payload == null ? "null" : payload.length));
         }
         ByteBuffer buf = ByteBuffer.wrap(payload);
         buf.order(ByteOrder.BIG_ENDIAN);
         UUID transferId = new UUID(buf.getLong(), buf.getLong());
         boolean success = buf.get() == 1;
         long ackTimestamp = buf.getLong();
+        long highestContiguousChunk = -1L;
+        long receiverOffset = -1L;
+        if (payload.length == EXTENDED_ACK_PAYLOAD_BYTES) {
+            highestContiguousChunk = buf.getLong();
+            receiverOffset = buf.getLong();
+        }
 
-        return new AckPayload(transferId, success, ackTimestamp);
+        return new AckPayload(transferId, success, ackTimestamp, highestContiguousChunk, receiverOffset);
     }
 
     // ========================================================================

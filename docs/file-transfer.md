@@ -150,3 +150,43 @@ File Transfers
    Progress: 100.0% (14.2 MB / 14.2 MB)
    Speed:    18.4 MB/s
 ```
+
+---
+
+## 7. Sliding-Window Flow Control & Reliable Streaming
+
+MeshDrop implements a sliding-window transport protocol on top of TCP framed packets to optimize throughput while enforcing strict bounded memory and backpressure:
+
+```text
+Sender                                                        Receiver
+  │                                                              │
+  │─── FILE_CHUNK (chunk 0, len 64KB) ──────────────────────────►│
+  │─── FILE_CHUNK (chunk 1, len 64KB) ──────────────────────────►│
+  │─── FILE_CHUNK (chunk 2, len 64KB) ──────────────────────────►│
+  │─── FILE_CHUNK (chunk 3, len 64KB) ──────────────────────────►│
+  │                                                              │
+  │◄── FILE_CHUNK_ACK (chunk 0 acked, next expected off) ────────│ (Window slides)
+  │─── FILE_CHUNK (chunk 4, len 64KB) ──────────────────────────►│
+  │                                                              │
+  │    [Timeout / Unacked detection]                             │
+  │─── RETRANSMIT chunk N (attempt i / maxRetries) ─────────────►│
+```
+
+### Flow Control Rules
+1. **Window Size Bounds**: The sender dispatches up to `windowSize` (default: 8, max: 64) unacknowledged chunks before pausing and awaiting window progress.
+2. **Cumulative ACKs**: As receiver persists chunks, it transmits 41-byte `FILE_CHUNK_ACK` packets conveying `highestContiguousChunk` and `receiverOffset`.
+3. **ACK Timeout & Retransmission**: Oldest unacknowledged in-flight chunks are timed (`ackTimeoutMs = 5000ms`). If unacknowledged, sender retransmits the missing chunk with exponential backoff up to `maxRetries = 5`.
+4. **Source Mutation Detection**: Sender records `fileSize` and `lastModifiedTime` at start of transfer. Prior to streaming and before `FILE_COMPLETE`, sender verifies source attributes on disk. If mutation is detected, transfer safely aborts with an explicit error.
+
+---
+
+## 8. Memory Safety & Large File Guarantees (10 GB, 50 GB, 100 GB+)
+
+### Strict Memory Bound: $O(\text{chunkSize} \times \text{windowSize})$
+Memory consumption is strictly bounded and independent of logical file size:
+$$\text{Max In-Flight RAM} = \text{chunkSize} \times \text{windowSize} = 64\text{ KiB} \times 8 = 512\text{ KiB}$$
+
+Even when transferring 10 GB, 50 GB, or 100 GB+ datasets:
+- **No full-file buffering**: Prohibits `Files.readAllBytes()`, whole-file arrays, or large ByteBuffers.
+- **Incremental SHA-256**: Digest is updated in 256 KiB streaming buffers during pre-transfer hashing and receiver chunk processing.
+- **Seekable FileChannels**: Sender reads exact byte slices directly from filesystem blocks; receiver writes directly to designated offsets in `.part` files.

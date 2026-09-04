@@ -206,3 +206,19 @@ Cancel an active or recoverable transfer and permanently remove partial staging 
 meshdrop> cancel e5b22ee3
 [INFO] Cancelled transfer e5b22ee3-e0b1-4672-a84a-b2febc7230d5. Staged artifacts cleaned up.
 ```
+
+---
+
+## 8. Large-File Resumption & Recovery Assessment
+
+MeshDrop's recovery engine is hardened for very large files (10 GB, 50 GB, 100 GB+):
+
+1. **Recovery Assessment (`RecoveryManager.assessTransfer`)**:
+   - Inspects staging directory for matching `.part` and `.meta` files.
+   - Categorizes transfer as `COMPLETED`, `RESUMABLE`, `CORRUPTED`, or `UNKNOWN`.
+2. **Trailing Byte Truncation**:
+   - If an abrupt power loss or crash occurred while uncommitted bytes were written beyond the last flushed checkpoint, `RecoveryManager` and `FileReceiver` safely truncate the `.part` file back down to `checkpoint.bytesReceived()`.
+   - Prevents off-by-N byte skew or duplicate corruption.
+3. **Pre-hashing with Flat Memory**:
+   - To verify end-to-end SHA-256 upon completion of a resumed transfer, `FileReceiver` pre-hashes existing `.part` bytes up to the checkpoint offset using a streaming 256 KiB buffer.
+   - Total heap consumption during pre-hashing and subsequent streaming remains constant ($O(1)$) regardless of gigabyte offset.

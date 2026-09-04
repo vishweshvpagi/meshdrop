@@ -4,7 +4,7 @@
 
 [![Java 26](https://img.shields.io/badge/Java-26-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-success)](https://github.com/)
-[![Tests](https://img.shields.io/badge/Test%20Suites-76%2F76%20Passed-brightgreen)](scripts/test.ps1)
+[![Tests](https://img.shields.io/badge/Test%20Suites-77%2F77%20Passed-brightgreen)](scripts/test.ps1)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20PowerShell-blue)](https://microsoft.com/)
 
 ---
@@ -16,6 +16,7 @@
 ### Core Engineering Principles
 - **Absolute Zero External Dependencies**: Built strictly using `java.base` (`java.net`, `java.nio`, `java.io`, `java.util.concurrent`, `java.security`). No Netty, no Spring, no Maven, no Gradle, no BouncyCastle, no Jackson.
 - **Modern Concurrency**: Driven by **Java Virtual Threads** (`Thread.ofVirtual()`) and non-blocking stream synchronization for massive concurrency with minimal memory overhead.
+- **Sliding-Window Flow Control & Bounded Memory**: Streams files of arbitrary size (10 GB, 50 GB, 100 GB+) in bounded $O(\text{chunkSize} \times \text{windowSize})$ heap space (~512 KiB to 2 MiB) with cumulative ACKs and exponential backoff retransmission.
 - **Zero-Trust Cryptographic Identity**: Every node generates persistent **Ed25519** public/private keypairs, verified via deterministic 32-character uppercase hexadecimal fingerprints.
 - **Custom Binary Wire Protocol**: Deterministic 28-byte framing with magic header validation, stream boundaries, CRC integrity, and explicit packet type routing.
 - **Receiver-Authoritative Resumable Transfers**: Crash-safe `.meta` checkpoints and `.part` sparse disk staging enable seamless mid-stream transfer recovery across process restarts or abrupt network drops.
@@ -158,7 +159,19 @@ Demonstrates resilience against abrupt network severance mid-stream, verificatio
 .\scripts\demo_resume.ps1
 ```
 
-### 3. Manual Multi-Terminal Demonstration
+### 3. Automated Large File Streaming Transfer Demo
+Demonstrates large file transfer with sliding-window flow control, live throughput metrics, bounded memory (< 32 MB heap), and SHA-256 verification:
+```powershell
+.\scripts\demo_large_transfer.ps1
+```
+
+### 4. Automated Large File Resumption & Recovery Demo
+Demonstrates mid-stream network severance at 50% on a large file, disk checkpoint verification, reconnection, zero-duplicate resumption, and bit-for-bit SHA-256 verification:
+```powershell
+.\scripts\demo_large_resume.ps1
+```
+
+### 5. Manual Multi-Terminal Demonstration
 Launch two separate terminals on the same machine with isolated data directories:
 
 **Terminal 1 (Alice):**
@@ -211,7 +224,7 @@ meshdrop> status
 
 ## 9. Test Suite Summary
 
-MeshDrop includes a standalone, zero-dependency test runner executing **76 distinct test suites** covering all layers of the architecture:
+MeshDrop includes a standalone, zero-dependency test runner executing **77 distinct test suites** covering all layers of the architecture:
 
 ```text
 =========================================

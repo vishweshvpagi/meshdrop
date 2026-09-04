@@ -27,8 +27,35 @@ public final class ProtocolConstants {
     /** Default message delivery acknowledgement timeout in milliseconds */
     public static final int DEFAULT_MESSAGE_ACK_TIMEOUT_MS = 5_000;
 
+    /** Minimum allowable file chunk size (4 KiB) */
+    public static final int MIN_FILE_CHUNK_SIZE = 4 * 1024;
+
     /** Default file chunk size for peer transfers (64 KiB) */
     public static final int DEFAULT_FILE_CHUNK_SIZE = 64 * 1024;
+
+    /** Maximum allowable file chunk size (4 MiB) */
+    public static final int MAX_FILE_CHUNK_SIZE = 4 * 1024 * 1024;
+
+    /** Default sliding window size (maximum in-flight unacknowledged chunks) */
+    public static final int DEFAULT_WINDOW_SIZE = 8;
+
+    /** Minimum allowable sliding window size */
+    public static final int MIN_WINDOW_SIZE = 1;
+
+    /** Maximum allowable sliding window size */
+    public static final int MAX_WINDOW_SIZE = 64;
+
+    /** Default chunk acknowledgement timeout in milliseconds */
+    public static final long DEFAULT_CHUNK_ACK_TIMEOUT_MS = 5_000;
+
+    /** Maximum chunk retransmission retries before marking transfer interrupted */
+    public static final int DEFAULT_MAX_CHUNK_RETRIES = 5;
+
+    /** Checkpoint interval in bytes for periodic on-disk flush (1 MiB) */
+    public static final long DEFAULT_CHECKPOINT_INTERVAL_BYTES = 1024 * 1024;
+
+    /** Checkpoint interval in milliseconds for periodic on-disk flush (1s) */
+    public static final long DEFAULT_CHECKPOINT_INTERVAL_MS = 1_000;
 
     /** Default file transfer offer acceptance timeout in milliseconds */
     public static final int DEFAULT_FILE_OFFER_TIMEOUT_MS = 30_000;

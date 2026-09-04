@@ -75,6 +75,7 @@ import com.meshdrop.security.IdentityFingerprintTest;
 import com.meshdrop.security.CryptoUtilsTest;
 import com.meshdrop.security.TrustStoreTest;
 import com.meshdrop.transfer.TransferHardeningTest;
+import com.meshdrop.transfer.LargeFileTransferEngineTest;
 import com.meshdrop.storage.StorageManagerTest;
 
 import java.util.ArrayList;
@@ -399,6 +400,10 @@ public class TestRunner {
         allTests.add(new TestCase() {
             public String name() { return "TransferHardeningTest"; }
             public void run() throws Exception { new TransferHardeningTest().runAll(); }
+        });
+        allTests.add(new TestCase() {
+            public String name() { return "LargeFileTransferEngineTest"; }
+            public void run() throws Exception { new LargeFileTransferEngineTest().runAll(); }
         });
 
         List<TestCase> testsToRun = allTests;

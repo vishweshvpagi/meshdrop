@@ -532,4 +532,8 @@ public class Node {
             }
         }
     }
+
+    public com.meshdrop.transfer.RecoveryManager getRecoveryManager() {
+        return fileTransferService != null ? fileTransferService.getRecoveryManager() : null;
+    }
 }

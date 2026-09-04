@@ -8,6 +8,8 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -38,7 +40,7 @@ public class FileReceiver implements AutoCloseable {
     private static final int CHECKPOINT_CHUNK_INTERVAL = 32; // Checkpoint every ~2MB
     private static final long CHECKPOINT_MS_INTERVAL = 1000;  // Or at least every 1s
 
-    private OutputStream out;
+    private FileChannel channel;
     private TransferCheckpoint checkpoint;
     private long expectedOffset = 0;
     private int expectedChunkIndex = 0;
@@ -101,27 +103,39 @@ public class FileReceiver implements AutoCloseable {
                 throw new IOException("Cannot resume: staging part file not found: " + tempFilePath);
             }
 
-            long actualSize = Files.size(tempFilePath);
-            if (actualSize != resumeCheckpoint.bytesReceived()) {
+            this.channel = FileChannel.open(tempFilePath, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.READ);
+            long actualSize = channel.size();
+
+            // Safe truncation / consistency check
+            if (actualSize > resumeCheckpoint.bytesReceived()) {
+                Logger.warn("[TRANSFER] Truncating uncheckpointed trailing bytes from " + actualSize + " down to checkpoint size " + resumeCheckpoint.bytesReceived());
+                channel.truncate(resumeCheckpoint.bytesReceived());
+                actualSize = resumeCheckpoint.bytesReceived();
+            } else if (actualSize < resumeCheckpoint.bytesReceived()) {
                 throw new IOException("Cannot resume: part file size (" + actualSize +
                         ") does not match checkpoint bytes (" + resumeCheckpoint.bytesReceived() + ")");
             }
 
             // Pre-hash existing bytes into digest so final digest verifies entire file
-            try (InputStream in = Files.newInputStream(tempFilePath)) {
-                byte[] buf = new byte[64 * 1024];
-                int read;
-                while ((read = in.read(buf)) != -1) {
-                    digest.update(buf, 0, read);
-                }
+            channel.position(0);
+            ByteBuffer rehashBuf = ByteBuffer.allocate(BUFFER_SIZE);
+            long rehashed = 0;
+            while (rehashed < actualSize) {
+                int toRead = (int) Math.min(rehashBuf.capacity(), actualSize - rehashed);
+                rehashBuf.limit(toRead);
+                int read = channel.read(rehashBuf);
+                if (read == -1) break;
+                rehashBuf.flip();
+                digest.update(rehashBuf);
+                rehashBuf.clear();
+                rehashed += read;
             }
 
             this.expectedOffset = resumeCheckpoint.nextExpectedOffset();
             this.expectedChunkIndex = resumeCheckpoint.nextExpectedChunk();
             this.checkpoint = resumeCheckpoint;
 
-            // Open in APPEND mode
-            this.out = new BufferedOutputStream(Files.newOutputStream(tempFilePath, StandardOpenOption.WRITE, StandardOpenOption.APPEND), BUFFER_SIZE);
+            channel.position(expectedOffset);
 
             transfer.setLocalPath(tempFilePath);
             transfer.setBytesTransferred(expectedOffset);
@@ -132,7 +146,7 @@ public class FileReceiver implements AutoCloseable {
                     " at chunk " + expectedChunkIndex + " (offset " + expectedOffset + " bytes)");
         } else {
             // Fresh transfer initialization
-            this.out = new BufferedOutputStream(Files.newOutputStream(tempFilePath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE), BUFFER_SIZE);
+            this.channel = FileChannel.open(tempFilePath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE, StandardOpenOption.READ);
             this.checkpoint = TransferCheckpoint.initial(metadata, ProtocolConstants.DEFAULT_FILE_CHUNK_SIZE);
             this.recoveryManager.saveCheckpoint(checkpoint);
 
@@ -159,8 +173,8 @@ public class FileReceiver implements AutoCloseable {
      * Backwards-compatible handleChunk for Phase 0 legacy interface.
      */
     public void handleChunk(Chunk chunk, byte[] data) throws IOException {
-        if (out != null && data != null) {
-            out.write(data);
+        if (channel != null && channel.isOpen() && data != null) {
+            channel.write(ByteBuffer.wrap(data));
         }
     }
 
@@ -209,7 +223,15 @@ public class FileReceiver implements AutoCloseable {
             throw new IOException("Unexpected chunk offset: expected " + expectedOffset + ", got " + chunk.offset());
         }
 
-        out.write(chunk.data());
+        if (chunk.length() > ProtocolConstants.MAX_FILE_CHUNK_SIZE) {
+            throw new IOException("Chunk length exceeds maximum allowable chunk size: " + chunk.length());
+        }
+
+        channel.position(expectedOffset);
+        ByteBuffer writeBuf = ByteBuffer.wrap(chunk.data());
+        while (writeBuf.hasRemaining()) {
+            channel.write(writeBuf);
+        }
         digest.update(chunk.data());
 
         expectedOffset += chunk.length();
@@ -221,7 +243,7 @@ public class FileReceiver implements AutoCloseable {
                 (System.currentTimeMillis() - lastCheckpointTime >= CHECKPOINT_MS_INTERVAL);
 
         if (recoveryManager != null && shouldCheckpoint) {
-            out.flush();
+            channel.force(false);
             checkpoint = checkpoint.withProgress(expectedChunkIndex, expectedOffset, expectedOffset);
             transfer.setCheckpoint(checkpoint);
             recoveryManager.saveCheckpoint(checkpoint);
@@ -255,11 +277,11 @@ public class FileReceiver implements AutoCloseable {
 
         transfer.transitionTo(TransferState.VERIFYING);
 
-        // 1. Close output stream to flush file
-        if (out != null) {
-            out.flush();
-            out.close();
-            out = null;
+        // 1. Flush and close FileChannel
+        if (channel != null && channel.isOpen()) {
+            channel.force(false);
+            channel.close();
+            channel = null;
         }
 
         // 2. Validate chunk counts and byte sizes
@@ -342,12 +364,12 @@ public class FileReceiver implements AutoCloseable {
         if (closed || completed) return;
         closed = true;
 
-        if (out != null) {
+        if (channel != null && channel.isOpen()) {
             try {
-                out.flush();
-                out.close();
+                channel.force(false);
+                channel.close();
             } catch (IOException ignored) {}
-            out = null;
+            channel = null;
         }
 
         if (recoveryManager != null && checkpoint != null) {
@@ -381,11 +403,11 @@ public class FileReceiver implements AutoCloseable {
         if (closed) return;
         closed = true;
 
-        if (out != null) {
+        if (channel != null && channel.isOpen()) {
             try {
-                out.close();
+                channel.close();
             } catch (IOException ignored) {}
-            out = null;
+            channel = null;
         }
 
         if (recoveryManager != null) {
@@ -418,11 +440,11 @@ public class FileReceiver implements AutoCloseable {
                 pauseForInterruption("Receiver connection closed before completion");
             } else {
                 closed = true;
-                if (out != null) {
+                if (channel != null && channel.isOpen()) {
                     try {
-                        out.close();
+                        channel.close();
                     } catch (IOException ignored) {}
-                    out = null;
+                    channel = null;
                 }
             }
         }

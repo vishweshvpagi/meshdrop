@@ -3,6 +3,7 @@ package com.meshdrop.transfer;
 import com.meshdrop.util.Logger;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -21,6 +22,13 @@ import java.util.UUID;
  */
 public class RecoveryManager {
 
+    public enum RecoveryStatus {
+        COMPLETED,
+        RESUMABLE,
+        CORRUPTED,
+        UNKNOWN
+    }
+
     public static final String PART_PREFIX = ".transfer-";
     public static final String PART_SUFFIX = ".part";
     public static final String META_SUFFIX = ".meta";
@@ -33,7 +41,51 @@ public class RecoveryManager {
         try {
             Files.createDirectories(recoveryDir);
         } catch (IOException e) {
-            Logger.severe("[RECOVERY] Failed to create recovery directory: " + recoveryDir, e);
+            Logger.warn("[RECOVERY] Could not create recovery directory: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Assesses on-disk artifacts for a specific transfer ID and determines recovery status.
+     */
+    public RecoveryStatus assessTransfer(UUID transferId) {
+        if (transferId == null) return RecoveryStatus.UNKNOWN;
+        Path metaPath = getMetaFilePath(transferId);
+        Path partPath = getPartFilePath(transferId);
+
+        if (!Files.isRegularFile(metaPath)) {
+            return Files.isRegularFile(partPath) ? RecoveryStatus.UNKNOWN : RecoveryStatus.UNKNOWN;
+        }
+
+        Optional<TransferCheckpoint> opt = loadCheckpoint(transferId);
+        if (opt.isEmpty()) {
+            return RecoveryStatus.CORRUPTED;
+        }
+
+        TransferCheckpoint cp = opt.get();
+        if (cp.fileSize() < 0 || cp.bytesReceived() < 0 || cp.bytesReceived() > cp.fileSize()) {
+            return RecoveryStatus.CORRUPTED;
+        }
+
+        if (cp.expectedSha256() == null || cp.expectedSha256().length() != 64) {
+            return RecoveryStatus.CORRUPTED;
+        }
+
+        if (!Files.isRegularFile(partPath)) {
+            return RecoveryStatus.CORRUPTED;
+        }
+
+        try {
+            long partSize = Files.size(partPath);
+            if (partSize == cp.fileSize() && cp.bytesReceived() == cp.fileSize()) {
+                return RecoveryStatus.COMPLETED;
+            }
+            if (partSize >= cp.bytesReceived() && cp.bytesReceived() >= 0) {
+                return RecoveryStatus.RESUMABLE;
+            }
+            return RecoveryStatus.CORRUPTED;
+        } catch (IOException e) {
+            return RecoveryStatus.CORRUPTED;
         }
     }
 
@@ -110,6 +162,15 @@ public class RecoveryManager {
 
         try {
             long actualSize = Files.size(partPath);
+            if (actualSize > checkpoint.bytesReceived()) {
+                Logger.info("[RECOVERY] Part file size (" + actualSize + ") exceeds checkpoint (" +
+                        checkpoint.bytesReceived() + "). Safely truncating to checkpoint.");
+                try (FileChannel fc = FileChannel.open(partPath, StandardOpenOption.WRITE)) {
+                    fc.truncate(checkpoint.bytesReceived());
+                }
+                actualSize = checkpoint.bytesReceived();
+            }
+
             if (actualSize != checkpoint.bytesReceived()) {
                 Logger.warn("[RECOVERY] Consistency check failed for " + checkpoint.transferId() +
                         ": actual part size (" + actualSize + ") != checkpoint bytesReceived (" + checkpoint.bytesReceived() + ")");

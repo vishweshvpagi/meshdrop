@@ -25,7 +25,11 @@ public final class HashUtils {
     }
 
     public static String sha256(File file) throws IOException {
-        try (InputStream in = new FileInputStream(file)) {
+        return sha256(file.toPath());
+    }
+
+    public static String sha256(java.nio.file.Path path) throws IOException {
+        try (InputStream in = new java.io.BufferedInputStream(java.nio.file.Files.newInputStream(path), 256 * 1024)) {
             return sha256(in);
         }
     }
@@ -33,7 +37,7 @@ public final class HashUtils {
     public static String sha256(InputStream in) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[256 * 1024]; // Bounded 256 KiB buffer for streaming O(1) memory hashing
             int read;
             while ((read = in.read(buffer)) != -1) {
                 digest.update(buffer, 0, read);

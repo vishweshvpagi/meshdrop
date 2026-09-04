@@ -117,9 +117,17 @@ Both `HELLO` (`0x01`) and `HELLO_RESPONSE` (`0x02`) transmit the peer's `NodeIde
 - **M bytes**: Rejection reason (UTF-8)
 
 ### 5.6 `FILE_ACK` (`0x17`)
-- **16 bytes**: Transfer UUID
-- **1 byte**: Success flag (`0x01` success, `0x00` failure)
-- **8 bytes**: Acknowledgment timestamp (int64, epoch ms)
+Used for transfer completion acknowledgments and sliding-window cumulative progress acknowledgments:
+- **Standard Completion ACK (25 bytes)**:
+  - **16 bytes**: Transfer UUID
+  - **1 byte**: Success flag (`0x01` success, `0x00` failure)
+  - **8 bytes**: Acknowledgment timestamp (int64, epoch ms)
+- **Extended Sliding-Window Progress ACK (41 bytes)**:
+  - **16 bytes**: Transfer UUID
+  - **1 byte**: Success flag (`0x01`)
+  - **8 bytes**: Acknowledgment timestamp (int64, epoch ms)
+  - **8 bytes**: Highest contiguous chunk index acknowledged (int64, big-endian)
+  - **8 bytes**: Receiver contiguous byte offset (int64, big-endian)
 
 ### 5.7 `FILE_ERROR` (`0x18`)
 - **16 bytes**: Transfer UUID
