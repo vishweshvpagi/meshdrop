@@ -183,7 +183,7 @@ public class ConnectionManager implements PeerListener {
             connection.addCloseListener(conn -> {
                 outboundExpectedIdentities.remove(conn.getConnectionId());
                 if (inFlightAttempts.remove(targetNodeId) != null) {
-                    if (peer.getState() == PeerState.CONNECTING) {
+                    if (peer.getState() == PeerState.CONNECTING && !peer.isConnected()) {
                         peer.setState(PeerState.DISCONNECTED);
                         Logger.info("[CONNECTION] Connection " + conn.getConnectionId() +
                                 " closed before handshake completed. Peer " + peer.getDisplayName() + " marked DISCONNECTED.");

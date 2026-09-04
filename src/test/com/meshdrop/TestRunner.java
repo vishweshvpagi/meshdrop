@@ -76,6 +76,9 @@ import com.meshdrop.security.CryptoUtilsTest;
 import com.meshdrop.security.TrustStoreTest;
 import com.meshdrop.transfer.TransferHardeningTest;
 import com.meshdrop.transfer.LargeFileTransferEngineTest;
+import com.meshdrop.transfer.TransferCodecExtendedTest;
+import com.meshdrop.transfer.SlidingWindowFlowControlTest;
+import com.meshdrop.transfer.RealInterruptedResumeTest;
 import com.meshdrop.storage.StorageManagerTest;
 
 import java.util.ArrayList;
@@ -404,6 +407,18 @@ public class TestRunner {
         allTests.add(new TestCase() {
             public String name() { return "LargeFileTransferEngineTest"; }
             public void run() throws Exception { new LargeFileTransferEngineTest().runAll(); }
+        });
+        allTests.add(new TestCase() {
+            public String name() { return "TransferCodecExtendedTest"; }
+            public void run() throws Exception { new TransferCodecExtendedTest().runAll(); }
+        });
+        allTests.add(new TestCase() {
+            public String name() { return "SlidingWindowFlowControlTest"; }
+            public void run() throws Exception { new SlidingWindowFlowControlTest().runAll(); }
+        });
+        allTests.add(new TestCase() {
+            public String name() { return "RealInterruptedResumeTest"; }
+            public void run() throws Exception { new RealInterruptedResumeTest().runAll(); }
         });
 
         List<TestCase> testsToRun = allTests;

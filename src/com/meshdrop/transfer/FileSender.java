@@ -33,9 +33,29 @@ public class FileSender {
     private final long ackTimeoutMs;
     private final int maxRetries;
 
+    public record SenderDebugInfo(
+            int windowSize,
+            long baseChunk,
+            long nextChunk,
+            int inFlightCount,
+            long highestAckedChunk,
+            long highestAckedOffset,
+            int retries,
+            boolean failed,
+            String failureReason
+    ) {}
+
     private final Object windowLock = new Object();
     private volatile long highestAckedChunk = -1;
     private volatile long highestAckedOffset = -1;
+    private volatile TcpConnection currentConnection;
+    private volatile boolean failed = false;
+    private volatile String failureReason = null;
+
+    private volatile long currentBaseChunk = 0;
+    private volatile long currentNextChunk = 0;
+    private volatile int currentInFlightCount = 0;
+    private volatile int currentRetries = 0;
 
     public FileSender(int chunkSize, int windowSize, long ackTimeoutMs, int maxRetries) {
         int safeChunk = chunkSize > 0 ? chunkSize : ProtocolConstants.DEFAULT_FILE_CHUNK_SIZE;
@@ -62,8 +82,43 @@ public class FileSender {
         this(ProtocolConstants.DEFAULT_FILE_CHUNK_SIZE, 0);
     }
 
+    public SenderDebugInfo getDebugInfo() {
+        return new SenderDebugInfo(
+                windowSize,
+                currentBaseChunk,
+                currentNextChunk,
+                currentInFlightCount,
+                highestAckedChunk,
+                highestAckedOffset,
+                currentRetries,
+                failed,
+                failureReason
+        );
+    }
+
+    public TcpConnection getCurrentConnection() {
+        return currentConnection;
+    }
+
+    public void setConnection(TcpConnection connection) {
+        this.currentConnection = Objects.requireNonNull(connection, "connection must not be null");
+        synchronized (windowLock) {
+            windowLock.notifyAll();
+        }
+    }
+
+    public void notifyTransferFailed(String reason) {
+        synchronized (windowLock) {
+            this.failed = true;
+            this.failureReason = reason;
+            windowLock.notifyAll();
+        }
+    }
+
     public void onAckReceived(long highestContiguousChunk, long receiverOffset) {
         synchronized (windowLock) {
+            Logger.fine(String.format("[TRANSFER DEBUG] ACK-RECV highestContiguous=%d offset=%d (prevAcked=%d)",
+                    highestContiguousChunk, receiverOffset, highestAckedChunk));
             if (highestContiguousChunk > highestAckedChunk) {
                 highestAckedChunk = highestContiguousChunk;
                 highestAckedOffset = receiverOffset;
@@ -115,6 +170,7 @@ public class FileSender {
             throw new IOException("Invalid startChunkIndex: " + startChunkIndex);
         }
 
+        this.currentConnection = connection;
         if (startOffset > 0) {
             highestAckedChunk = startChunkIndex - 1;
             highestAckedOffset = startOffset;
@@ -149,6 +205,9 @@ public class FileSender {
                 // Open-loop streaming (used when unwindowed)
                 int bytesRead;
                 while ((bytesRead = channel.read(buf)) != -1) {
+                    if (failed || transfer.getState() == TransferState.FAILED) {
+                        throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
+                    }
                     if (transfer.isCancelled() || transfer.getState() == TransferState.CANCELLED) {
                         Logger.info("[TRANSFER] Streaming cancelled for transfer " + transfer.getShortId());
                         throw new IOException("Transfer was cancelled");
@@ -162,7 +221,7 @@ public class FileSender {
 
                     FileChunk chunk = new FileChunk(transfer.getTransferId(), chunkIndex, offset, bytesRead, chunkData);
                     Packet chunkPacket = Packet.createFileChunk(chunk);
-                    connection.sendPacket(chunkPacket);
+                    currentConnection.sendPacket(chunkPacket);
 
                     offset += bytesRead;
                     chunkIndex++;
@@ -184,6 +243,9 @@ public class FileSender {
                 java.util.Map<Long, InFlight> inFlight = new java.util.concurrent.ConcurrentHashMap<>();
 
                 while (baseChunk < totalChunks) {
+                    if (failed || transfer.getState() == TransferState.FAILED) {
+                        throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
+                    }
                     if (transfer.isCancelled() || transfer.getState() == TransferState.CANCELLED) {
                         Logger.info("[TRANSFER] Streaming cancelled for transfer " + transfer.getShortId());
                         throw new IOException("Transfer was cancelled");
@@ -196,6 +258,9 @@ public class FileSender {
 
                     // Dispatch chunks within sliding window
                     while (nextChunk < totalChunks && (nextChunk - baseChunk) < windowSize) {
+                        if (failed || transfer.getState() == TransferState.FAILED) {
+                            throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
+                        }
                         if (transfer.isCancelled() || transfer.getState() == TransferState.CANCELLED) {
                             throw new IOException("Transfer was cancelled");
                         }
@@ -211,28 +276,44 @@ public class FileSender {
                         buf.clear();
 
                         FileChunk chunk = new FileChunk(transfer.getTransferId(), (int) nextChunk, currentOffset, bytesRead, chunkData);
-                        connection.sendPacket(Packet.createFileChunk(chunk));
+                        currentConnection.sendPacket(Packet.createFileChunk(chunk));
 
                         inFlight.put(nextChunk, new InFlight(nextChunk, currentOffset, bytesRead, System.currentTimeMillis(), 0));
 
+                        String shortTid = transfer.getShortId();
+                        Logger.fine(String.format("[TRANSFER DEBUG] SEND transfer=%s chunk=%d offset=%d length=%d",
+                                shortTid, nextChunk, currentOffset, bytesRead));
+                        Logger.fine(String.format("[TRANSFER DEBUG] WINDOW base=%d next=%d inFlight=%d",
+                                baseChunk, nextChunk + 1, inFlight.size()));
+
                         currentOffset += bytesRead;
                         nextChunk++;
-
-                        transfer.setBytesTransferred(currentOffset);
-                        transfer.setChunksTransferred((int) nextChunk);
-
-                        if (listener != null) {
-                            listener.onTransferProgress(transfer);
-                        }
+                        this.currentBaseChunk = baseChunk;
+                        this.currentNextChunk = nextChunk;
+                        this.currentInFlightCount = inFlight.size();
                     }
 
                     // Wait for window progress or ACK timeout
                     synchronized (windowLock) {
+                        if (failed || transfer.getState() == TransferState.FAILED) {
+                            throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
+                        }
+
                         if (highestAckedChunk >= baseChunk) {
                             long oldBase = baseChunk;
                             baseChunk = Math.min(highestAckedChunk + 1, totalChunks);
                             for (long c = oldBase; c < baseChunk; c++) {
                                 inFlight.remove(c);
+                            }
+                            this.currentBaseChunk = baseChunk;
+                            this.currentInFlightCount = inFlight.size();
+                            this.currentRetries = 0;
+                            if (highestAckedOffset >= 0) {
+                                transfer.setBytesTransferred(highestAckedOffset);
+                                transfer.setChunksTransferred((int) baseChunk);
+                                if (listener != null) {
+                                    listener.onTransferProgress(transfer);
+                                }
                             }
                         }
 
@@ -255,11 +336,25 @@ public class FileSender {
                                 throw new IOException("Transfer interrupted while awaiting ACK", e);
                             }
 
+                            if (failed || transfer.getState() == TransferState.FAILED) {
+                                throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
+                            }
+
                             if (highestAckedChunk >= baseChunk) {
                                 long oldBase = baseChunk;
                                 baseChunk = Math.min(highestAckedChunk + 1, totalChunks);
                                 for (long c = oldBase; c < baseChunk; c++) {
                                     inFlight.remove(c);
+                                }
+                                this.currentBaseChunk = baseChunk;
+                                this.currentInFlightCount = inFlight.size();
+                                this.currentRetries = 0;
+                                if (highestAckedOffset >= 0) {
+                                    transfer.setBytesTransferred(highestAckedOffset);
+                                    transfer.setChunksTransferred((int) baseChunk);
+                                    if (listener != null) {
+                                        listener.onTransferProgress(transfer);
+                                    }
                                 }
                             }
 
@@ -270,6 +365,7 @@ public class FileSender {
                                             " unacknowledged after " + maxRetries + " retries (" + ackTimeoutMs + "ms timeout)");
                                 }
 
+                                this.currentRetries = unacked.retryCount + 1;
                                 Logger.warn("[TRANSFER] ACK timeout for chunk " + baseChunk + ". Retransmitting (attempt " +
                                         (unacked.retryCount + 1) + "/" + maxRetries + ")");
 
@@ -282,7 +378,7 @@ public class FileSender {
                                 buf.clear();
 
                                 FileChunk retryChunk = new FileChunk(transfer.getTransferId(), (int) baseChunk, unacked.offset, bytesRead, chunkData);
-                                connection.sendPacket(Packet.createFileChunk(retryChunk));
+                                currentConnection.sendPacket(Packet.createFileChunk(retryChunk));
 
                                 inFlight.put(baseChunk, new InFlight(baseChunk, unacked.offset, bytesRead, System.currentTimeMillis(), unacked.retryCount + 1));
                             }
@@ -292,6 +388,11 @@ public class FileSender {
 
                 chunkIndex = (int) totalChunks;
                 offset = currentOffset;
+                transfer.setBytesTransferred(fileSize);
+                transfer.setChunksTransferred((int) totalChunks);
+                if (listener != null) {
+                    listener.onTransferProgress(transfer);
+                }
             }
 
             if (transfer.isCancelled() || transfer.getState() == TransferState.CANCELLED) {

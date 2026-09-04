@@ -112,6 +112,7 @@ public class CommandLineInterface implements MessageListener {
         commands.put("autoaccept", this::cmdAutoAccept);
         commands.put("downloads", this::cmdDownloads);
         commands.put("transfers", this::cmdTransfers);
+        commands.put("transfer-debug", this::cmdTransferDebug);
         commands.put("resume", this::cmdResume);
         commands.put("cancel", this::cmdCancel);
         commands.put("ping", this::cmdPing);
@@ -226,6 +227,7 @@ public class CommandLineInterface implements MessageListener {
         sb.append(String.format("%-24s%s%n", "autoaccept [on|off]", "Toggle auto-accept for incoming files"));
         sb.append(String.format("%-24s%s%n", "downloads [open]", "View downloads folder or open in Explorer"));
         sb.append(String.format("%-24s%s%n", "transfers", "Show transfers"));
+        sb.append(String.format("%-24s%s%n", "transfer-debug <id>", "Show debug metrics for a transfer"));
         sb.append(String.format("%-24s%s%n", "resume <transferId>", "Resume transfer"));
         sb.append(String.format("%-24s%s%n", "cancel <transferId>", "Cancel transfer"));
         sb.append(String.format("%-24s%s%n", "ping <peer>", "Ping peer"));
@@ -750,6 +752,94 @@ public class CommandLineInterface implements MessageListener {
                     t.getState(),
                     speedStr));
         }
+
+        return CommandResult.ok(sb.toString().trim());
+    }
+
+    private CommandResult cmdTransferDebug(Command cmd) {
+        if (cmd.argCount() < 1) {
+            return CommandResult.error("Usage: transfer-debug <transferId>");
+        }
+        if (node.getFileTransferService() == null) {
+            return CommandResult.error("File transfer service is not active");
+        }
+
+        String query = cmd.arg(0);
+        var transferOpt = node.getFileTransferService().getTransferManager().findTransfer(query);
+        if (transferOpt.isEmpty()) {
+            return CommandResult.error("Transfer not found matching '" + query + "'");
+        }
+
+        Transfer t = transferOpt.get();
+        UUID tid = t.getTransferId();
+        var fts = node.getFileTransferService();
+        var sender = fts.getActiveSender(tid);
+        var receiver = fts.getActiveReceiver(tid);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n================================================\n");
+        sb.append("Transfer Debug Info: ").append(t.getShortId()).append(" (").append(tid).append(")\n");
+        sb.append("================================================\n");
+        sb.append("File:             ").append(t.getFileMetadata() != null ? t.getFileMetadata().fileName() : "unknown").append("\n");
+        sb.append("Total Size:       ").append(t.getTotalBytes()).append(" bytes (").append(formatFileSize(t.getTotalBytes())).append(")\n");
+        sb.append("Transferred:      ").append(t.getBytesTransferred()).append(" bytes (").append(formatFileSize(t.getBytesTransferred())).append(")\n");
+        sb.append(String.format("Progress:         %.2f%%%n", t.getProgressPercentage()));
+        sb.append("Direction:        ").append(t.getDirection()).append("\n");
+        sb.append("State:            ").append(t.getState()).append("\n");
+        double instSpeed = t.getTransferSpeedBps() / (1024.0 * 1024.0);
+        double avgSpeed = t.getAverageSpeedBps() / (1024.0 * 1024.0);
+        sb.append(String.format("Instant Speed:    %.2f MB/s%n", instSpeed));
+        sb.append(String.format("Average Speed:    %.2f MB/s%n", avgSpeed));
+        long etaSec = t.getEstimatedRemainingSeconds();
+        sb.append("ETA:              ").append(etaSec >= 0 ? formatDurationSeconds(etaSec) : "--:--").append("\n");
+        sb.append("Elapsed Duration: ").append(formatDurationSeconds(t.getElapsedDurationMs() / 1000)).append("\n");
+
+        if (t.getErrorMessage() != null) {
+            sb.append("Error Message:    ").append(t.getErrorMessage()).append("\n");
+        }
+
+        // Active Sender Info
+        sb.append("\n-- Active Sender Status --\n");
+        if (sender != null) {
+            var info = sender.getDebugInfo();
+            sb.append("Window Size:      ").append(info.windowSize()).append("\n");
+            sb.append("Window Base Chunk:").append(info.baseChunk()).append("\n");
+            sb.append("Next Chunk:       ").append(info.nextChunk()).append("\n");
+            sb.append("In-Flight Chunks: ").append(info.inFlightCount()).append("\n");
+            sb.append("Highest Acked:    chunk ").append(info.highestAckedChunk()).append(" (offset: ").append(info.highestAckedOffset()).append(" bytes)\n");
+            sb.append("Head Retries:     ").append(info.retries()).append("\n");
+            sb.append("Failed:           ").append(info.failed()).append(info.failureReason() != null ? " (" + info.failureReason() + ")" : "").append("\n");
+        } else {
+            sb.append("No active sender running.\n");
+        }
+
+        // Active Receiver Info
+        sb.append("\n-- Active Receiver Status --\n");
+        if (receiver != null) {
+            var info = receiver.getDebugInfo();
+            sb.append("Expected Chunk:   ").append(info.expectedChunkIndex()).append("\n");
+            sb.append("Expected Offset:  ").append(info.expectedOffset()).append(" bytes\n");
+            sb.append("Checkpoint:       chunk ").append(info.checkpointChunk()).append(" (").append(info.checkpointBytes()).append(" bytes)\n");
+            sb.append("Part File:        ").append(info.tempFilePath()).append("\n");
+            sb.append("Completed:        ").append(info.completed()).append("\n");
+            sb.append("Closed:           ").append(info.closed()).append("\n");
+        } else {
+            sb.append("No active receiver running.\n");
+        }
+
+        // Checkpoint from recovery manager
+        if (fts.getRecoveryManager() != null) {
+            var cpOpt = fts.getRecoveryManager().loadCheckpoint(tid);
+            if (cpOpt != null && cpOpt.isPresent()) {
+                var cp = cpOpt.get();
+                sb.append("\n-- Persisted Checkpoint (Disk) --\n");
+                sb.append("Next Expected:    chunk ").append(cp.nextExpectedChunk()).append("\n");
+                sb.append("Bytes Received:   ").append(cp.bytesReceived()).append(" bytes\n");
+                sb.append("Next Offset:      ").append(cp.nextExpectedOffset()).append(" bytes\n");
+                sb.append("Last Updated:     ").append(Instant.ofEpochMilli(cp.lastUpdated())).append("\n");
+            }
+        }
+        sb.append("================================================\n");
 
         return CommandResult.ok(sb.toString().trim());
     }

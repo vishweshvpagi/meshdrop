@@ -98,6 +98,14 @@ public class FileTransferService {
         return recoveryManager;
     }
 
+    public FileSender getActiveSender(UUID transferId) {
+        return transferId != null ? activeSenders.get(transferId) : null;
+    }
+
+    public FileReceiver getActiveReceiver(UUID transferId) {
+        return transferId != null ? activeReceivers.get(transferId) : null;
+    }
+
     /**
      * Scans recovery directory at startup and registers all consistent checkpoints as RESUMABLE transfers.
      */
@@ -362,9 +370,12 @@ public class FileTransferService {
                     FileReceiver receiver = new FileReceiver(metadata, downloadsDir, tempDir, transfer, recoveryManager, createListenerForwarder());
                     activeReceivers.put(metadata.transferId(), receiver);
                     connection.addCloseListener(closedConn -> {
-                        FileReceiver r = activeReceivers.remove(metadata.transferId());
-                        if (r != null) {
-                            r.pauseForInterruption("Connection closed");
+                        TcpConnection current = transferConnections.get(metadata.transferId());
+                        if (current == null || current == closedConn) {
+                            FileReceiver r = activeReceivers.remove(metadata.transferId());
+                            if (r != null) {
+                                r.pauseForInterruption("Connection closed");
+                            }
                         }
                     });
                     transfer.transitionTo(TransferState.ACCEPTED);
@@ -405,7 +416,8 @@ public class FileTransferService {
             FileSender sender = new FileSender(chunkSize, ProtocolConstants.DEFAULT_WINDOW_SIZE);
             activeSenders.put(transferId, sender);
             try {
-                sender.streamFile(transfer.getLocalPath(), connection, transfer, createListenerForwarder());
+                TcpConnection streamConn = transferConnections.getOrDefault(transferId, connection);
+                sender.streamFile(transfer.getLocalPath(), streamConn, transfer, createListenerForwarder());
             } catch (Exception e) {
                 Logger.warn("[TRANSFER] Upload stream failed: " + e.getMessage());
                 CompletableFuture<Transfer> future = pendingOfferFutures.remove(transferId);
@@ -448,8 +460,28 @@ public class FileTransferService {
             try {
                 receiver.receiveChunk(chunk);
                 // Send cumulative progress ACK for sliding-window flow control
-                connection.sendPacket(Packet.createFileChunkAck(chunk.transferId(), chunk.chunkIndex(), receiver.getExpectedOffset()));
+                long highestContiguous = receiver.getExpectedChunkIndex() - 1;
+                long receiverOffset = receiver.getExpectedOffset();
+                if (highestContiguous >= 0) {
+                    connection.sendPacket(Packet.createFileChunkAck(chunk.transferId(), highestContiguous, receiverOffset));
+                    String shortTid = chunk.transferId().toString().substring(0, Math.min(8, chunk.transferId().toString().length()));
+                    Logger.fine(String.format("[TRANSFER DEBUG] ACK-SEND transfer=%s highestContiguous=%d offset=%d",
+                            shortTid, highestContiguous, receiverOffset));
+                }
             } catch (IOException e) {
+                if (e.getMessage() != null && (e.getMessage().contains("Out-of-order") || e.getMessage().contains("Unexpected chunk offset"))) {
+                    Logger.warn("[TRANSFER] Out-of-order chunk " + chunk.chunkIndex() + " received (expected " +
+                            receiver.getExpectedChunkIndex() + "); repeating cumulative ACK");
+                    long highestContiguous = receiver.getExpectedChunkIndex() - 1;
+                    long receiverOffset = receiver.getExpectedOffset();
+                    if (highestContiguous >= 0) {
+                        try {
+                            connection.sendPacket(Packet.createFileChunkAck(chunk.transferId(), highestContiguous, receiverOffset));
+                        } catch (Exception ignored) {}
+                    }
+                    return;
+                }
+
                 Logger.severe("[TRANSFER] Receiver failed on chunk " + chunk.chunkIndex() + ": " + e.getMessage(), e);
                 receiver.abort(e.getMessage());
                 activeReceivers.remove(chunk.transferId());
@@ -534,6 +566,11 @@ public class FileTransferService {
                     notifyFailed(transfer, error.message());
                 }
             }
+            FileSender sender = activeSenders.get(error.transferId());
+            if (sender != null) {
+                sender.notifyTransferFailed(error.message());
+            }
+
             FileReceiver receiver = activeReceivers.remove(error.transferId());
             if (receiver != null) {
                 receiver.abort(error.message());
@@ -547,6 +584,24 @@ public class FileTransferService {
                 resumeFuture.completeExceptionally(new IOException(error.message()));
             }
         } catch (ProtocolException ignored) {}
+    }
+
+    /**
+     * Migrates active transfer transport connections when duplicate connection arbitration replaces a connection.
+     */
+    public void migrateConnection(UUID peerId, TcpConnection oldConn, TcpConnection newConn) {
+        if (peerId == null || newConn == null) return;
+        Logger.info("[TRANSFER] Migrating connection for peer " + peerId + " from conn " +
+                (oldConn != null ? oldConn.getConnectionId() : "none") + " to conn " + newConn.getConnectionId());
+        for (var entry : transferConnections.entrySet()) {
+            if (oldConn == null || entry.getValue() == oldConn) {
+                entry.setValue(newConn);
+                FileSender sender = activeSenders.get(entry.getKey());
+                if (sender != null) {
+                    sender.setConnection(newConn);
+                }
+            }
+        }
     }
 
     // ========================================================================

@@ -1,6 +1,8 @@
 package com.meshdrop.transfer;
 
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -8,6 +10,12 @@ import java.util.UUID;
  * Manages runtime state, progress tracking, and metrics for an active file transfer.
  */
 public class Transfer {
+
+    private record ProgressSample(long timestampMs, long bytes) {}
+    private final Deque<ProgressSample> speedSamples = new ArrayDeque<>();
+    private static final long SPEED_WINDOW_MS = 3000;
+    private static final long STALL_THRESHOLD_MS = 2000;
+    private volatile long lastProgressUpdateMs = 0;
 
     private final UUID transferId;
     private final FileMetadata metadata;
@@ -192,10 +200,18 @@ public class Transfer {
     }
 
     public synchronized void addBytesTransferred(long bytes) {
-        this.bytesTransferred += bytes;
+        setBytesTransferred(this.bytesTransferred + bytes);
     }
 
     public synchronized void setBytesTransferred(long bytes) {
+        long now = System.currentTimeMillis();
+        if (bytes != this.bytesTransferred) {
+            this.lastProgressUpdateMs = now;
+            speedSamples.addLast(new ProgressSample(now, bytes));
+            while (!speedSamples.isEmpty() && now - speedSamples.peekFirst().timestampMs() > SPEED_WINDOW_MS) {
+                speedSamples.removeFirst();
+            }
+        }
         this.bytesTransferred = bytes;
     }
 
@@ -222,9 +238,43 @@ public class Transfer {
     }
 
     /**
-     * Calculates transfer speed in bytes per second.
+     * Calculates instant transfer speed in bytes per second using a rolling window of recent samples.
+     * If transfer is stalled (no progress in > 2 seconds), drops to 0.0.
      */
-    public double getTransferSpeedBps() {
+    public synchronized double getTransferSpeedBps() {
+        if (state == TransferState.COMPLETED) {
+            long totalElapsedMs = (completedTimeMs > 0 ? completedTimeMs : System.currentTimeMillis()) - startTimeMs;
+            return totalElapsedMs > 0 ? (bytesTransferred * 1000.0) / totalElapsedMs : 0.0;
+        }
+        if (state != TransferState.TRANSFERRING && state != TransferState.ACCEPTED && state != TransferState.OFFERING && state != TransferState.RESUMING) {
+            return 0.0;
+        }
+        long now = System.currentTimeMillis();
+        if (lastProgressUpdateMs > 0 && (now - lastProgressUpdateMs) > STALL_THRESHOLD_MS) {
+            return 0.0;
+        }
+        while (!speedSamples.isEmpty() && now - speedSamples.peekFirst().timestampMs() > SPEED_WINDOW_MS) {
+            speedSamples.removeFirst();
+        }
+        if (speedSamples.size() < 2) {
+            long elapsedMs = now - startTimeMs;
+            if (elapsedMs <= 0 || bytesTransferred <= 0) return 0.0;
+            return (bytesTransferred * 1000.0) / elapsedMs;
+        }
+        ProgressSample oldest = speedSamples.peekFirst();
+        ProgressSample newest = speedSamples.peekLast();
+        long windowTimeMs = newest.timestampMs() - oldest.timestampMs();
+        long windowBytes = newest.bytes() - oldest.bytes();
+        if (windowTimeMs <= 0 || windowBytes <= 0) {
+            return 0.0;
+        }
+        return (windowBytes * 1000.0) / windowTimeMs;
+    }
+
+    /**
+     * Calculates overall average transfer speed since start.
+     */
+    public double getAverageSpeedBps() {
         long elapsedMs = (completedTimeMs > 0 ? completedTimeMs : System.currentTimeMillis()) - startTimeMs;
         if (elapsedMs <= 0 || bytesTransferred <= 0) {
             return 0.0;

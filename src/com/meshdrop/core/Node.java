@@ -88,6 +88,7 @@ public class Node {
         java.nio.file.Path tmpDir = storageManager.getTempDir();
         this.fileTransferService = new com.meshdrop.transfer.FileTransferService(identity, peerManager, dlDir, tmpDir);
         this.fileTransferService.scanAndRegisterRecoverableTransfers();
+        this.peerManager.setConnectionMigrationListener(this.fileTransferService::migrateConnection);
 
         // 3. Initialize application handshake and packet dispatcher
         this.handshakeService = new HandshakeService(

@@ -22,10 +22,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 public class PeerManager {
 
+    public interface ConnectionMigrationListener {
+        void onConnectionMigrated(UUID peerId, TcpConnection oldConn, TcpConnection newConn);
+    }
+
     private final UUID localNodeId;
     private final ConcurrentHashMap<UUID, Peer> peers = new ConcurrentHashMap<>();
     private final List<PeerListener> listeners = new CopyOnWriteArrayList<>();
     private volatile com.meshdrop.security.TrustStore trustStore;
+    private volatile ConnectionMigrationListener migrationListener;
 
     public PeerManager(UUID localNodeId) {
         this.localNodeId = Objects.requireNonNull(localNodeId, "localNodeId must not be null");
@@ -33,6 +38,10 @@ public class PeerManager {
 
     public PeerManager() {
         this(UUID.randomUUID());
+    }
+
+    public void setConnectionMigrationListener(ConnectionMigrationListener listener) {
+        this.migrationListener = listener;
     }
 
     public com.meshdrop.security.TrustStore getTrustStore() {
@@ -163,11 +172,19 @@ public class PeerManager {
                     "): keeping " + keptConn.getDirection() + " (id=" + keptConn.getConnectionId() +
                     "), closing " + rejectedConn.getDirection() + " (id=" + rejectedConn.getConnectionId() + ")");
 
+            peer.setConnection(keptConn);
+
+            if (migrationListener != null) {
+                try {
+                    migrationListener.onConnectionMigrated(identity.nodeId(), rejectedConn, keptConn);
+                } catch (Exception e) {
+                    Logger.warn("[PEER] Error notifying connection migration: " + e.getMessage());
+                }
+            }
+
             try {
                 rejectedConn.close();
             } catch (IOException ignored) {}
-
-            peer.setConnection(keptConn);
         } else {
             peer.setConnection(connection);
         }

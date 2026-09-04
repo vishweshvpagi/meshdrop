@@ -178,6 +178,40 @@ public class FileReceiver implements AutoCloseable {
         }
     }
 
+    public record ReceiverDebugInfo(
+            int expectedChunkIndex,
+            long expectedOffset,
+            boolean completed,
+            boolean closed,
+            Path tempFilePath,
+            long checkpointBytes,
+            int checkpointChunk
+    ) {}
+
+    public ReceiverDebugInfo getDebugInfo() {
+        return new ReceiverDebugInfo(
+                expectedChunkIndex,
+                expectedOffset,
+                completed,
+                closed,
+                tempFilePath,
+                checkpoint != null ? checkpoint.bytesReceived() : 0L,
+                checkpoint != null ? checkpoint.nextExpectedChunk() : 0
+        );
+    }
+
+    public boolean isCompleted() {
+        return completed;
+    }
+
+    public boolean isClosed() {
+        return closed;
+    }
+
+    public FileMetadata getMetadata() {
+        return metadata;
+    }
+
     public TransferCheckpoint getCheckpoint() {
         return checkpoint;
     }
@@ -209,9 +243,14 @@ public class FileReceiver implements AutoCloseable {
             throw new IOException("Chunk transferId mismatch: expected " + metadata.transferId() + ", got " + chunk.transferId());
         }
 
-        // Duplicate chunk handling (idempotent ignore)
-        if (chunk.chunkIndex() < expectedChunkIndex) {
-            Logger.fine("[TRANSFER] Ignoring duplicate chunk " + chunk.chunkIndex() + " (expected " + expectedChunkIndex + ")");
+        String shortTid = chunk.transferId().toString().substring(0, Math.min(8, chunk.transferId().toString().length()));
+        Logger.fine(String.format("[TRANSFER DEBUG] RECV transfer=%s chunk=%d offset=%d length=%d",
+                shortTid, chunk.chunkIndex(), chunk.offset(), chunk.length()));
+
+        // Duplicate chunk handling (idempotent ignore without corrupting data or state)
+        if (chunk.chunkIndex() < expectedChunkIndex || chunk.offset() < expectedOffset) {
+            Logger.fine(String.format("[TRANSFER DEBUG] RECV (duplicate) transfer=%s chunk=%d (expected=%d, offset=%d, expectedOffset=%d)",
+                    shortTid, chunk.chunkIndex(), expectedChunkIndex, chunk.offset(), expectedOffset));
             return;
         }
 
@@ -233,6 +272,9 @@ public class FileReceiver implements AutoCloseable {
             channel.write(writeBuf);
         }
         digest.update(chunk.data());
+
+        Logger.fine(String.format("[TRANSFER DEBUG] WRITE transfer=%s chunk=%d offset=%d length=%d",
+                shortTid, chunk.chunkIndex(), expectedOffset, chunk.length()));
 
         expectedOffset += chunk.length();
         expectedChunkIndex++;
