@@ -167,6 +167,48 @@ public class Node {
         return connection;
     }
 
+    /**
+     * Connects to a known discovered or disconnected peer by its UUID.
+     *
+     * @param peerId the remote peer's Node ID
+     * @return the established or existing TcpConnection
+     * @throws IOException if the peer is unknown, has no known address, or the connection fails
+     */
+    public TcpConnection connectToPeer(UUID peerId) throws IOException {
+        if (state != NodeState.RUNNING) {
+            throw new IOException("Node is not running (state=" + state + ")");
+        }
+        Peer peer = peerManager.findPeer(peerId)
+                .orElseThrow(() -> new IllegalArgumentException("Peer not found: " + peerId));
+        if (peer.isConnected() && peer.getConnection() != null && peer.getConnection().isOpen()) {
+            return peer.getConnection();
+        }
+        if (peer.getAddress() == null) {
+            throw new IOException("Peer " + peer.getDisplayName() + " has no known network address");
+        }
+        return connectTo(peer.getAddress().host(), peer.getAddress().tcpPort());
+    }
+
+    /**
+     * Disconnects a peer by closing its active transport TCP connection.
+     * The peer remains registered in PeerManager with its known address and identity.
+     *
+     * @param peerId the remote peer's Node ID
+     * @return true if an active connection was found and closed, false otherwise
+     * @throws IOException if an error occurs while closing the socket
+     */
+    public boolean disconnectPeer(UUID peerId) throws IOException {
+        if (peerManager == null) return false;
+        Peer peer = peerManager.findPeer(peerId)
+                .orElseThrow(() -> new IllegalArgumentException("Peer not found: " + peerId));
+        TcpConnection conn = peer.getConnection();
+        if (conn != null && conn.isOpen()) {
+            conn.close();
+            return true;
+        }
+        return false;
+    }
+
     // ========================================================================
     // Application-level convenience methods (used by CLI)
     // ========================================================================
@@ -443,6 +485,15 @@ public class Node {
         return fileTransferService;
     }
 
+    public com.meshdrop.transfer.Transfer startFileTransfer(UUID peerId, java.nio.file.Path filePath) throws IOException {
+        if (fileTransferService == null) {
+            throw new IOException("Node is not running");
+        }
+        Peer peer = peerManager.findPeer(peerId)
+                .orElseThrow(() -> new IllegalArgumentException("Peer not found: " + peerId));
+        return fileTransferService.startFileTransfer(peer, filePath);
+    }
+
     public CompletableFuture<com.meshdrop.transfer.Transfer> sendFile(UUID peerId, java.nio.file.Path filePath) {
         if (fileTransferService == null) {
             return CompletableFuture.failedFuture(new IOException("Node is not running"));
@@ -490,6 +541,39 @@ public class Node {
     public void cancelTransfer(UUID transferId) {
         if (fileTransferService != null) {
             fileTransferService.cancelTransfer(transferId);
+        }
+    }
+
+    public CompletableFuture<com.meshdrop.transfer.Transfer> retryTransfer(UUID transferId) {
+        if (fileTransferService == null) {
+            return CompletableFuture.failedFuture(new IOException("Node is not running"));
+        }
+        var transfer = fileTransferService.getTransferManager().getTransfer(transferId)
+                .orElseThrow(() -> new IllegalArgumentException("Transfer not found: " + transferId));
+        if (transfer.getDirection() != com.meshdrop.transfer.TransferDirection.UPLOAD) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException("Retry is only supported for outbound transfers"));
+        }
+        if (transfer.getLocalPath() == null || !java.nio.file.Files.isRegularFile(transfer.getLocalPath())) {
+            return CompletableFuture.failedFuture(new IOException("Local source file is missing: " + transfer.getLocalPath()));
+        }
+        transfer.setErrorMessage(null);
+        return resumeTransfer(transferId);
+    }
+
+    public boolean removeTransfer(UUID transferId) {
+        if (fileTransferService == null) return false;
+        var transferOpt = fileTransferService.getTransferManager().getTransfer(transferId);
+        if (transferOpt.isEmpty()) return false;
+        var transfer = transferOpt.get();
+        if (!transfer.getState().isTerminal() && transfer.getState() != com.meshdrop.transfer.TransferState.CANCELLED) {
+            throw new IllegalStateException("Cannot remove an active transfer from history; cancel it first.");
+        }
+        return fileTransferService.getTransferManager().removeTransfer(transferId);
+    }
+
+    public void interruptTransfer(UUID transferId) {
+        if (fileTransferService != null) {
+            fileTransferService.interruptTransfer(transferId);
         }
     }
 

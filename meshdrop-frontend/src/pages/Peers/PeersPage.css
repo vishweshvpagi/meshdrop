@@ -1,0 +1,123 @@
+.peers-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.peers-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.peers-count-text {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.peers-filter-buttons {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Manual Connect Bar */
+.connect-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.25rem;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  flex-wrap: wrap;
+}
+
+.connect-bar-label {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  margin-right: 0.25rem;
+}
+
+.connect-bar-inputs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  max-width: 400px;
+}
+
+.connect-input-host {
+  flex: 2;
+}
+
+.connect-input-port {
+  flex: 1;
+  max-width: 90px;
+}
+
+.peers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.25rem;
+}
+
+.peer-card {
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.peer-card.is-disconnected {
+  opacity: 0.75;
+  background-color: var(--bg-card-subdued);
+}
+
+.peer-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.peer-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.peer-meta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.peer-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.peer-meta-label {
+  color: var(--text-muted);
+}
+
+.peer-meta-val {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.peer-meta-fingerprint {
+  font-family: var(--font-mono);
+  font-size: 0.725rem;
+  color: var(--text-muted);
+  word-break: break-all;
+  background: var(--bg-secondary);
+  padding: 0.25rem 0.4rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  width: 100%;
+}

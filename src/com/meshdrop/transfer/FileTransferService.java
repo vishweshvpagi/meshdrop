@@ -123,62 +123,69 @@ public class FileTransferService {
     // ========================================================================
 
     /**
-     * Initiates an outgoing file transfer to a connected peer.
+     * Synchronously initiates an outgoing file transfer, registers it, and returns the Transfer object.
      */
-    public CompletableFuture<Transfer> sendFile(Peer peer, Path filePath) {
+    public Transfer startFileTransfer(Peer peer, Path filePath) throws IOException {
         if (!running.get()) {
-            return CompletableFuture.failedFuture(new IOException("FileTransferService is shutting down"));
+            throw new IOException("FileTransferService is shutting down");
         }
 
         Objects.requireNonNull(peer, "peer must not be null");
         Objects.requireNonNull(filePath, "filePath must not be null");
 
         if (!peer.isConnected() || peer.getConnection() == null || !peer.getConnection().isReady()) {
-            return CompletableFuture.failedFuture(new IOException("Peer " + peer.getDisplayName() + " is not connected"));
+            throw new IOException("Peer " + peer.getDisplayName() + " is not connected");
         }
 
         if (!Files.isRegularFile(filePath)) {
-            return CompletableFuture.failedFuture(new IOException("File does not exist or is not a regular file: " + filePath));
+            throw new IOException("File does not exist or is not a regular file: " + filePath);
         }
 
-        try {
-            long fileSize = Files.size(filePath);
-            String sha256 = HashUtils.sha256(filePath.toFile());
-            String fileName = filePath.getFileName().toString();
+        long fileSize = Files.size(filePath);
+        String sha256 = HashUtils.sha256(filePath.toFile());
+        String fileName = filePath.getFileName().toString();
 
-            FileMetadata metadata = FileMetadata.create(localIdentity.nodeId(), peer.getNodeId(), fileName, fileSize, sha256);
-            Transfer transfer = new Transfer(metadata, TransferDirection.UPLOAD, filePath);
-            transferManager.registerTransfer(transfer);
+        FileMetadata metadata = FileMetadata.create(localIdentity.nodeId(), peer.getNodeId(), fileName, fileSize, sha256);
+        Transfer transfer = new Transfer(metadata, TransferDirection.UPLOAD, filePath);
+        transferManager.registerTransfer(transfer);
 
-            CompletableFuture<Transfer> completionFuture = new CompletableFuture<>();
-            pendingOfferFutures.put(metadata.transferId(), completionFuture);
-            transferConnections.put(metadata.transferId(), peer.getConnection());
+        CompletableFuture<Transfer> completionFuture = new CompletableFuture<>();
+        pendingOfferFutures.put(metadata.transferId(), completionFuture);
+        transferConnections.put(metadata.transferId(), peer.getConnection());
 
-            // Send FILE_OFFER packet
-            Packet offerPacket = Packet.createFileOffer(metadata);
-            peer.getConnection().sendPacket(offerPacket);
-            transfer.transitionTo(TransferState.WAITING_FOR_ACCEPT);
+        // Send FILE_OFFER packet
+        Packet offerPacket = Packet.createFileOffer(metadata);
+        peer.getConnection().sendPacket(offerPacket);
+        transfer.transitionTo(TransferState.WAITING_FOR_ACCEPT);
 
-            Logger.info("[TRANSFER] Sent FILE_OFFER for " + fileName + " (" + fileSize + " bytes) to " + peer.getDisplayName());
+        Logger.info("[TRANSFER] Sent FILE_OFFER for " + fileName + " (" + fileSize + " bytes) to " + peer.getDisplayName());
 
-            // Schedule offer timeout (only triggers if peer never accepted/rejected within offerTimeoutMs)
-            Thread.ofVirtual().name("offer-timeout-" + metadata.transferId()).start(() -> {
-                try {
-                    Thread.sleep(offerTimeoutMs);
-                    if (transfer.getState() == TransferState.WAITING_FOR_ACCEPT) {
-                        CompletableFuture<Transfer> pending = pendingOfferFutures.remove(metadata.transferId());
-                        if (pending != null && !pending.isDone()) {
-                            transfer.transitionTo(TransferState.FAILED);
-                            transfer.setErrorMessage("Offer timed out after " + offerTimeoutMs + "ms");
-                            pending.completeExceptionally(new IOException("Offer timed out waiting for peer acceptance"));
-                            notifyFailed(transfer, "Offer timed out");
-                        }
+        // Schedule offer timeout (only triggers if peer never accepted/rejected within offerTimeoutMs)
+        Thread.ofVirtual().name("offer-timeout-" + metadata.transferId()).start(() -> {
+            try {
+                Thread.sleep(offerTimeoutMs);
+                if (transfer.getState() == TransferState.WAITING_FOR_ACCEPT) {
+                    CompletableFuture<Transfer> pending = pendingOfferFutures.remove(metadata.transferId());
+                    if (pending != null && !pending.isDone()) {
+                        transfer.transitionTo(TransferState.FAILED);
+                        transfer.setErrorMessage("Offer timed out after " + offerTimeoutMs + "ms");
+                        pending.completeExceptionally(new IOException("Offer timed out waiting for peer acceptance"));
+                        notifyFailed(transfer, "Offer timed out");
                     }
-                } catch (InterruptedException ignored) {}
-            });
+                }
+            } catch (InterruptedException ignored) {}
+        });
 
-            return completionFuture;
+        return transfer;
+    }
 
+    /**
+     * Initiates an outgoing file transfer to a connected peer.
+     */
+    public CompletableFuture<Transfer> sendFile(Peer peer, Path filePath) {
+        try {
+            Transfer transfer = startFileTransfer(peer, filePath);
+            return pendingOfferFutures.getOrDefault(transfer.getTransferId(), CompletableFuture.completedFuture(transfer));
         } catch (Exception e) {
             return CompletableFuture.failedFuture(e);
         }
@@ -253,6 +260,11 @@ public class FileTransferService {
             receiver.abort("Transfer cancelled by user");
         }
 
+        FileSender sender = activeSenders.remove(transferId);
+        if (sender != null) {
+            sender.interrupt();
+        }
+
         TcpConnection conn = transferConnections.remove(transferId);
         if (conn != null && conn.isReady()) {
             try {
@@ -273,6 +285,44 @@ public class FileTransferService {
             notifyCancelled(transfer);
         }
         Logger.info("[TRANSFER] Cancelled transfer " + (transfer != null ? transfer.getShortId() : transferId));
+    }
+
+    /**
+     * Safely interrupts an active transfer for reliability and testing, pausing receiver activity,
+     * preserving partial files and checkpoints, and closing the active transfer connection.
+     */
+    public void interruptTransfer(UUID transferId) {
+        if (transferId == null) return;
+
+        FileReceiver receiver = activeReceivers.remove(transferId);
+        if (receiver != null) {
+            receiver.pauseForInterruption("Transfer interrupted");
+        }
+
+        FileSender sender = activeSenders.remove(transferId);
+        if (sender != null) {
+            sender.interrupt();
+        }
+
+        TcpConnection conn = transferConnections.remove(transferId);
+        if (conn != null && conn.isOpen()) {
+            try {
+                conn.close();
+            } catch (IOException ignored) {}
+        }
+
+        Transfer transfer = transferManager.getTransfer(transferId).orElse(null);
+        if (transfer != null) {
+            transfer.setErrorMessage("Transfer interrupted");
+            if (transfer.getState().canTransitionTo(TransferState.INTERRUPTED)) {
+                transfer.transitionTo(TransferState.INTERRUPTED);
+                if (transfer.getState().canTransitionTo(TransferState.RESUMABLE)) {
+                    transfer.transitionTo(TransferState.RESUMABLE);
+                }
+            } else if (!transfer.getState().isTerminal()) {
+                transfer.transitionTo(TransferState.FAILED);
+            }
+        }
     }
 
     // ========================================================================
@@ -463,10 +513,14 @@ public class FileTransferService {
                 long highestContiguous = receiver.getExpectedChunkIndex() - 1;
                 long receiverOffset = receiver.getExpectedOffset();
                 if (highestContiguous >= 0) {
-                    connection.sendPacket(Packet.createFileChunkAck(chunk.transferId(), highestContiguous, receiverOffset));
-                    String shortTid = chunk.transferId().toString().substring(0, Math.min(8, chunk.transferId().toString().length()));
-                    Logger.fine(String.format("[TRANSFER DEBUG] ACK-SEND transfer=%s highestContiguous=%d offset=%d",
-                            shortTid, highestContiguous, receiverOffset));
+                    try {
+                        connection.sendPacket(Packet.createFileChunkAck(chunk.transferId(), highestContiguous, receiverOffset));
+                        String shortTid = chunk.transferId().toString().substring(0, Math.min(8, chunk.transferId().toString().length()));
+                        Logger.fine(String.format("[TRANSFER DEBUG] ACK-SEND transfer=%s highestContiguous=%d offset=%d",
+                                shortTid, highestContiguous, receiverOffset));
+                    } catch (IOException sendEx) {
+                        Logger.warn("[TRANSFER] Failed to send ACK for chunk " + highestContiguous + " (connection closed/severed): " + sendEx.getMessage());
+                    }
                 }
             } catch (IOException e) {
                 if (e.getMessage() != null && (e.getMessage().contains("Out-of-order") || e.getMessage().contains("Unexpected chunk offset"))) {

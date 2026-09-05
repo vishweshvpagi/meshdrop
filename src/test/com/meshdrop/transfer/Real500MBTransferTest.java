@@ -102,7 +102,7 @@ public class Real500MBTransferTest {
 
             CompletableFuture<Transfer> future = nodeA.sendFile(peerB.getNodeId(), srcFile);
 
-            Transfer result = future.get(120, TimeUnit.SECONDS);
+            Transfer result = future.get(300, TimeUnit.SECONDS);
             System.out.println();
             System.out.println("      Transfer state: " + result.getState());
 

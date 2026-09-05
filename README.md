@@ -4,8 +4,41 @@
 
 [![Java 26](https://img.shields.io/badge/Java-26-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-success)](https://github.com/)
-[![Tests](https://img.shields.io/badge/Test%20Suites-80%2F80%20Passed-brightgreen)](scripts/test.ps1)
+[![Tests](https://img.shields.io/badge/Test%20Suites-81%2F81%20Passed-brightgreen)](scripts/test.ps1)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20PowerShell-blue)](https://microsoft.com/)
+
+---
+
+## ⚡ Quickstart: One-Command Local App
+
+Start the complete MeshDrop local application (Java backend engine + React control panel) with a single command:
+
+### Windows PowerShell
+```powershell
+.\start-meshdrop.ps1
+```
+
+### Windows Double-Click / Command Prompt
+Double-click `start-meshdrop.bat` in File Explorer or run:
+```cmd
+start-meshdrop.bat
+```
+
+### Production Mode
+Launch against pre-compiled, production-optimized frontend assets:
+```powershell
+.\start-meshdrop.ps1 -Production
+```
+
+The launcher handles the full lifecycle automatically:
+1. Validates Java 26, Node.js, and npm runtime prerequisites.
+2. Compiles backend classes if needed (`out/`).
+3. Starts the Java backend daemon (`com.meshdrop.Main` on HTTP API :8080, TCP :5000, Discovery :5001).
+4. Polls the backend readiness endpoint (`http://localhost:8080/api/status`).
+5. Starts the frontend UI server on port 3000.
+6. Polls frontend readiness and automatically opens `http://localhost:3000` in your default browser.
+7. Redirects detailed runtime logs to `logs/backend.log`, `logs/frontend.log`, and `logs/launcher.log`.
+8. Supervises processes and cleanly terminates child PIDs upon `Ctrl+C`.
 
 ---
 

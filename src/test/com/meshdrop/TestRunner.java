@@ -420,6 +420,10 @@ public class TestRunner {
             public String name() { return "RealInterruptedResumeTest"; }
             public void run() throws Exception { new RealInterruptedResumeTest().runAll(); }
         });
+        allTests.add(new TestCase() {
+            public String name() { return "HttpControlServerTest"; }
+            public void run() throws Exception { new com.meshdrop.api.HttpControlServerTest().runAll(); }
+        });
 
         List<TestCase> testsToRun = allTests;
         if (args.length > 0 && !args[0].isBlank()) {

@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch;
  *   --tcp-port <port>     TCP port to listen on (default: 5000)
  *   --udp-port <port>     UDP multicast discovery port (default: 5001)
  *   --data-dir <path>     Application data root directory (default: data)
+ *   --api-port <port>     HTTP control API port for frontend (default: 8080, 0 to disable)
  *   --no-discovery        Disable UDP multicast peer discovery
  *   --no-cli              Run in non-interactive daemon mode
  *   connect <host> <port> Connect to a remote peer immediately upon startup
@@ -31,6 +32,7 @@ public class Main {
         String name = null;
         int tcpPort = NodeConfig.DEFAULT_TCP_PORT;
         int udpPort = NodeConfig.DEFAULT_UDP_PORT;
+        int apiPort = 8080;
         String dataDirStr = null;
         boolean discoveryEnabled = true;
         boolean enableCli = true;
@@ -44,6 +46,10 @@ public class Main {
                 tcpPort = Integer.parseInt(args[++i]);
             } else if ("--udp-port".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
                 udpPort = Integer.parseInt(args[++i]);
+            } else if ("--api-port".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
+                apiPort = Integer.parseInt(args[++i]);
+            } else if ("--no-api".equalsIgnoreCase(args[i])) {
+                apiPort = -1;
             } else if ("--data-dir".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
                 dataDirStr = args[++i];
             } else if ("--no-discovery".equalsIgnoreCase(args[i])) {
@@ -77,15 +83,36 @@ public class Main {
 
         Node node = new Node(config, identity);
 
+        com.meshdrop.api.HttpControlServer apiServer = null;
+        if (apiPort > 0) {
+            try {
+                apiServer = new com.meshdrop.api.HttpControlServer(node, apiPort);
+            } catch (Exception e) {
+                Logger.warn("[API] Could not configure HTTP control API: " + e.getMessage());
+            }
+        }
+        final com.meshdrop.api.HttpControlServer finalApiServer = apiServer;
+
         // Register JVM shutdown hook for Ctrl+C / SIGINT handling
         CountDownLatch shutdownLatch = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (finalApiServer != null) {
+                finalApiServer.stop();
+            }
             node.stop();
             shutdownLatch.countDown();
         }, "meshdrop-shutdown-hook"));
 
         try {
             node.start();
+
+            if (finalApiServer != null) {
+                try {
+                    finalApiServer.start();
+                } catch (IOException e) {
+                    Logger.warn("[API] Could not start HTTP control API on port " + apiPort + ": " + e.getMessage());
+                }
+            }
 
             // Connect immediately if requested
             if (connectHost != null) {
@@ -96,6 +123,9 @@ public class Main {
                 // Interactive CLI mode
                 CommandLineInterface cli = new CommandLineInterface(node);
                 cli.run();
+                if (finalApiServer != null) {
+                    finalApiServer.stop();
+                }
                 node.stop();
             } else {
                 // Daemon mode: wait until interrupted

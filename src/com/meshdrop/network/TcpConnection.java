@@ -257,6 +257,10 @@ public class TcpConnection implements AutoCloseable {
         return state == ConnectionState.READY;
     }
 
+    public long getConnectedAt() {
+        return connectedAt;
+    }
+
     @Override
     public void close() throws IOException {
         if (state == ConnectionState.CLOSED) {

@@ -27,3 +27,12 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *.log
+logs/
+
+# Frontend dependencies and builds
+**/node_modules/
+**/dist/
+**/dist-ssr/
+*.tsbuildinfo
+.env.local
+.env.*.local

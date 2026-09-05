@@ -51,11 +51,26 @@ public class FileSender {
     private volatile TcpConnection currentConnection;
     private volatile boolean failed = false;
     private volatile String failureReason = null;
+    private volatile boolean interrupted = false;
 
     private volatile long currentBaseChunk = 0;
     private volatile long currentNextChunk = 0;
     private volatile int currentInFlightCount = 0;
     private volatile int currentRetries = 0;
+
+    public void interrupt() {
+        this.interrupted = true;
+        synchronized (windowLock) {
+            windowLock.notifyAll();
+        }
+    }
+
+    private boolean isInterruptedOrPaused(Transfer transfer) {
+        if (interrupted) return true;
+        if (transfer == null) return false;
+        TransferState s = transfer.getState();
+        return s == TransferState.INTERRUPTED || s == TransferState.RESUMABLE || s == TransferState.RESUMING;
+    }
 
     public FileSender(int chunkSize, int windowSize, long ackTimeoutMs, int maxRetries) {
         int safeChunk = chunkSize > 0 ? chunkSize : ProtocolConstants.DEFAULT_FILE_CHUNK_SIZE;
@@ -205,6 +220,10 @@ public class FileSender {
                 // Open-loop streaming (used when unwindowed)
                 int bytesRead;
                 while ((bytesRead = channel.read(buf)) != -1) {
+                    if (isInterruptedOrPaused(transfer)) {
+                        Logger.info("[TRANSFER] Streaming interrupted for transfer " + transfer.getShortId());
+                        return;
+                    }
                     if (failed || transfer.getState() == TransferState.FAILED) {
                         throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
                     }
@@ -243,6 +262,10 @@ public class FileSender {
                 java.util.Map<Long, InFlight> inFlight = new java.util.concurrent.ConcurrentHashMap<>();
 
                 while (baseChunk < totalChunks) {
+                    if (isInterruptedOrPaused(transfer)) {
+                        Logger.info("[TRANSFER] Streaming interrupted for transfer " + transfer.getShortId());
+                        return;
+                    }
                     if (failed || transfer.getState() == TransferState.FAILED) {
                         throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
                     }
@@ -258,6 +281,9 @@ public class FileSender {
 
                     // Dispatch chunks within sliding window
                     while (nextChunk < totalChunks && (nextChunk - baseChunk) < windowSize) {
+                        if (isInterruptedOrPaused(transfer)) {
+                            return;
+                        }
                         if (failed || transfer.getState() == TransferState.FAILED) {
                             throw new IOException(failureReason != null ? "Transfer failed: " + failureReason : "Transfer failed on remote peer");
                         }
@@ -333,7 +359,15 @@ public class FileSender {
                                 windowLock.wait(waitDuration);
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
+                                if (isInterruptedOrPaused(transfer)) {
+                                    return;
+                                }
                                 throw new IOException("Transfer interrupted while awaiting ACK", e);
+                            }
+
+                            if (isInterruptedOrPaused(transfer)) {
+                                Logger.info("[TRANSFER] Streaming interrupted for transfer " + transfer.getShortId());
+                                return;
                             }
 
                             if (failed || transfer.getState() == TransferState.FAILED) {
@@ -412,6 +446,10 @@ public class FileSender {
             Logger.fine("[TRANSFER] Completed sending all chunks up to " + chunkIndex + " for " + transfer.getTransferId());
 
         } catch (IOException e) {
+            if (isInterruptedOrPaused(transfer)) {
+                Logger.info("[TRANSFER] Sender stream stopped cleanly due to interruption: " + e.getMessage());
+                return;
+            }
             if (transfer.getState() != TransferState.CANCELLED) {
                 transfer.setErrorMessage(e.getMessage());
                 if (!transfer.getState().isTerminal()) {
